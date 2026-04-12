@@ -63,12 +63,32 @@ class CodeAgent:
             for round_num in range(1, self.max_rounds + 1):
                 self.logger.info(self.AGENT_NAME, f"第 {round_num}/{self.max_rounds} 轮执行...")
 
-                # AST 安全检测
+                # ── AST 安全检测 ────────────────────────────────
                 issues = self.executor.checker.check(code)
                 if issues:
-                    self.logger.warning(self.AGENT_NAME,
-                        f"安全检测：{len(issues)} 个问题 → {issues[0]}")
-                    code = self._fix_safety_issues(code, issues)
+                    # 区分"语法错误"（代码提取失败）和"真正的安全问题"
+                    syntax_issues   = [i for i in issues if "语法错误" in i or "SyntaxError" in i]
+                    security_issues = [i for i in issues if "语法错误" not in i and "SyntaxError" not in i]
+
+                    if syntax_issues:
+                        # 语法错误：说明 extract_code 没能剥离 markdown 标记，
+                        # 或 LLM 返回了非 Python 内容。
+                        # 策略：再次强制提取 + 让 LLM 重新生成纯代码。
+                        self.logger.warning(self.AGENT_NAME,
+                            f"代码提取异常（语法错误），尝试重新提取并要求 LLM 输出纯代码...")
+                        # 先尝试二次提取
+                        code = self.executor.extract_code(code)
+                        # 二次提取后再检测
+                        issues2 = self.executor.checker.check(code)
+                        if any("语法错误" in i for i in issues2):
+                            # 仍有语法错误，要求 LLM 重新输出
+                            code = self._regenerate_clean_code(task_description, code)
+
+                    if security_issues:
+                        # 真正的安全问题（危险函数调用等）
+                        self.logger.warning(self.AGENT_NAME,
+                            f"安全检测：{len(security_issues)} 个安全问题 → {security_issues[0]}")
+                        code = self._fix_safety_issues(code, security_issues)
 
                 # 执行代码（子进程模式，支持完整 import）
                 exec_result = self.executor.execute_with_subprocess(code)
@@ -194,6 +214,29 @@ class CodeAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ])
+        return self.executor.extract_code(resp)
+
+    def _regenerate_clean_code(self, requirement: str, bad_code: str) -> str:
+        """
+        当 LLM 返回了带 markdown 标记或非 Python 内容时，
+        明确要求 LLM 重新输出纯 Python 代码（无任何 markdown 格式）。
+        """
+        system = (
+            "你是 Python 专家。请直接输出可运行的 Python 代码，"
+            "【绝对不要】包含任何 markdown 标记（不要有 ```python 或 ``` ），"
+            "不要有任何解释文字，只输出纯 Python 代码本身。"
+            "第一行必须是 import 语句或注释，不能是 ``` 或其他标记。"
+        )
+        prompt = (
+            f"需求：{requirement}\n\n"
+            f"之前的输出包含了格式错误，请重新输出纯 Python 代码（不含任何 markdown）：\n"
+            f"前次输出片段：{bad_code[:200]}"
+        )
+        resp = self.llm.chat_code([
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt}
+        ])
+        # 再次提取，双重保险
         return self.executor.extract_code(resp)
 
     def _generate_tests(self, code: str, requirement: str) -> str:

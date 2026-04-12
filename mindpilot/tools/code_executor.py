@@ -140,19 +140,91 @@ class CodeExecutor:
         self.checker = ASTSafetyChecker()
 
     def extract_code(self, text: str) -> str:
-        """从 LLM 输出中提取 Python 代码块"""
-        # 匹配 ```python ... ``` 或 ``` ... ```
-        patterns = [
-            r"```python\s*\n(.*?)```",
-            r"```\s*\n(.*?)```",
-            r"```python(.*?)```",
+        """
+        从 LLM 输出中稳健地提取 Python 代码。
+
+        处理以下所有情况：
+          1. ```python ... ```        标准 markdown 代码块
+          2. ``` ... ```              无语言标记的代码块
+          3. ```Python ... ```        大写 Python
+          4. 代码块后有多余说明文字
+          5. LLM 直接输出代码（无代码块标记）
+          6. 代码块前有中文说明段落
+          7. 多个代码块（取最长的一个）
+        """
+        if not text or not text.strip():
+            return ""
+
+        # 所有可能的代码块提取模式（按优先级排序）
+        fence_patterns = [
+            # ```python\n...\n``` 或 ```Python\n...\n```
+            r"```[Pp]ython[ \t]*\r?\n(.*?)\n?```",
+            # ```\n...\n```
+            r"```[ \t]*\r?\n(.*?)\n?```",
+            # ```python...``` （无换行，部分模型）
+            r"```[Pp]ython(.*?)```",
+            # ``` ... ``` （无换行）
+            r"```(.*?)```",
         ]
-        for pattern in patterns:
-            m = re.search(pattern, text, re.DOTALL)
-            if m:
-                return m.group(1).strip()
-        # 没有代码块标记，直接返回
-        return text.strip()
+
+        candidates = []
+        for pattern in fence_patterns:
+            for m in re.finditer(pattern, text, re.DOTALL):
+                code = m.group(1).strip()
+                if code and len(code) > 5:
+                    candidates.append(code)
+
+        if candidates:
+            # 选最长的候选（通常是最完整的代码块）
+            best = max(candidates, key=len)
+            return self._clean_code(best)
+
+        # 没有代码块标记：去除明显的非代码行后返回
+        lines = text.split("\n")
+        code_lines = []
+        in_code = False
+        for line in lines:
+            stripped = line.strip()
+            # 跳过纯中文说明行（不含任何 ASCII 代码字符）
+            is_chinese_only = (
+                stripped and
+                not any(c in stripped for c in "=()[]{}:,.<>+-*/\\#@\'\"") and
+                all(ord(c) > 127 or c.isspace() for c in stripped)
+            )
+            if not is_chinese_only and stripped:
+                code_lines.append(line)
+                in_code = True
+            elif in_code and not stripped:
+                code_lines.append(line)
+
+        result = "\n".join(code_lines).strip()
+        return self._clean_code(result) if result else text.strip()
+
+    def _clean_code(self, code: str) -> str:
+        """清理代码字符串：去除残留的 markdown 标记和无效前缀"""
+        lines = code.split("\n")
+        cleaned = []
+        for line in lines:
+            # 跳过只有 ``` 或 ```python 的行
+            if re.match(r"^\s*```(python|Python|py)?\s*$", line):
+                continue
+            cleaned.append(line)
+        code = "\n".join(cleaned).strip()
+
+        # 如果第一行是单独的 "python" 或 "Python"（regex 剥离后的残留），去掉它
+        first_line = code.split("\n")[0].strip()
+        if first_line.lower() in ("python", "py", "python3"):
+            code = "\n".join(code.split("\n")[1:]).strip()
+
+        # 最终兜底：如果开头还是 ```，强行截取
+        if code.startswith("```"):
+            first_newline = code.find("\n")
+            if first_newline != -1:
+                code = code[first_newline+1:].strip()
+            if code.endswith("```"):
+                code = code[:-3].strip()
+
+        return code
 
     def execute(self, code: str, extra_context: dict = None) -> ExecutionResult:
         """
