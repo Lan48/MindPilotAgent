@@ -241,23 +241,100 @@ class LLMClient:
                 "tasks": [
                     {"id":"T1","name":"文献检索","agent":"LiteratureAgent",
                      "description":"检索相关学术文献","depends_on":[]},
-                    {"id":"T2","name":"代码实现","agent":"CodeAgent",
-                     "description":"实现核心算法代码","depends_on":["T1"]},
-                    {"id":"T3","name":"数据分析","agent":"AnalysisAgent",
-                     "description":"分析实验结果并可视化","depends_on":["T2"]},
-                    {"id":"T4","name":"报告生成","agent":"EvaluationAgent",
-                     "description":"综合输出完整研究报告","depends_on":["T1","T2","T3"]},
+                    {"id":"T2","name":"实验设计","agent":"EvaluationAgent",
+                     "description":"基于文献综述设计实验假设、数据集、基线方法、评估指标和可复现流程","depends_on":["T1"]},
+                    {"id":"T3","name":"代码实现","agent":"CodeAgent",
+                     "description":"根据实验设计实现核心算法代码","depends_on":["T2"]},
+                    {"id":"T4","name":"数据分析","agent":"AnalysisAgent",
+                     "description":"分析实验结果并可视化","depends_on":["T3"]},
+                    {"id":"T5","name":"报告生成","agent":"EvaluationAgent",
+                     "description":"综合输出完整研究报告","depends_on":["T1","T2","T3","T4"]},
                 ],
-                "reasoning":"先检索文献建立背景知识，再实现核心代码，分析结果后生成完整报告。"
+                "reasoning":"先检索文献建立背景知识，再设计可复现实验方案，然后实现核心代码，分析结果后生成完整报告。"
             }, ensure_ascii=False)
 
-        if any(k in system for k in ["thought", "路径", "path"]):
+        if any(k in system for k in ["科研方法评审专家", "评分（0-1）"]):
             return json.dumps({"score": round(random.uniform(0.55,0.95),2),
                                "reasoning":"该路径逻辑合理，覆盖了主要研究方向。"},
                               ensure_ascii=False)
 
-        if any(k in system for k in ["代码","Python","python","code","编程","实现"]) or \
-           any(k in last.lower() for k in ["python","代码","实现","算法"]):
+        if any(k in system for k in ["实验设计", "实验方案", "科研实验设计"]):
+            return json.dumps({
+                "research_hypothesis": "引入轻量化跨模态连接模块能够提升视觉语言模型在图文对齐任务上的准确率，同时降低推理延迟和显存占用。",
+                "objectives": [
+                    "验证改进连接模块相较于标准投影层的性能增益",
+                    "分析不同连接策略在准确率、效率和稳定性上的权衡",
+                    "通过消融实验定位门控融合、残差连接等组件的贡献"
+                ],
+                "dataset": "实验可选用 COCO Captions、VQAv2 与 Flickr30K 等公开数据集。数据预处理包括图像尺寸标准化、文本分词、异常样本过滤，并按照训练集、验证集和测试集划分，保证各模型使用相同数据切分。",
+                "baselines": [
+                    "Linear Projection: 使用单层线性投影连接视觉编码器与语言模型",
+                    "MLP Adapter: 使用两层 MLP 完成视觉特征到语言空间的映射",
+                    "Cross-Attention Connector: 通过交叉注意力完成图文特征融合"
+                ],
+                "metrics": [
+                    "Accuracy = 正确样本数 / 总样本数，用于衡量问答或分类任务表现",
+                    "Recall@K = Top-K 检索结果中包含正确目标的比例，用于衡量图文检索能力",
+                    "Latency = 单样本平均推理时间，用于评估部署效率",
+                    "Memory = 推理峰值显存占用，用于衡量资源开销"
+                ],
+                "variables": {
+                    "independent": ["连接模块类型", "视觉特征维度", "训练轮数"],
+                    "dependent": ["Accuracy", "Recall@K", "Latency", "Memory"],
+                    "controlled": ["数据集划分", "随机种子", "优化器", "batch size"]
+                },
+                "ablations": [
+                    "移除门控融合模块，观察准确率与稳定性的变化",
+                    "移除残差连接，分析深层特征传递对性能的影响",
+                    "改变投影维度，比较参数量与效果之间的权衡"
+                ],
+                "procedure": [
+                    "统一数据预处理和训练配置，构建可复现实验环境",
+                    "分别训练基线模型与改进模型，记录训练日志和验证集指标",
+                    "在测试集上评估准确率、Recall@K、延迟和显存占用",
+                    "执行消融实验和重复实验，并对主要指标做显著性检验",
+                    "结合图表分析不同方法的性能差异和适用场景"
+                ],
+                "reproducibility": "固定随机种子为 42，每组实验至少重复 3 次；记录 Python、PyTorch、CUDA 版本和硬件配置；使用均值、标准差和配对 t 检验报告结果。",
+                "expected_results": "预期改进连接模块在保持较低资源开销的同时提升图文对齐质量，尤其在 VQA 和图文检索任务上优于简单投影层。消融实验预计会显示门控融合对准确率提升贡献最大，残差连接对训练稳定性更关键。",
+                "full_description": "本实验围绕视觉语言模型中视觉编码器与语言模型之间的连接机制展开。整体设计遵循控制变量原则，在统一数据集、训练策略和评估协议的前提下，对比线性投影、MLP Adapter、交叉注意力连接器和改进连接模块的性能。实验不仅关注任务准确率，还纳入推理延迟、显存占用和 Recall@K 等效率指标，从效果和资源开销两个角度判断方法优劣。通过消融实验进一步拆解门控融合、残差连接和投影维度等因素的贡献，使结论更具解释性和可复现性。",
+                "sections": [
+                    {
+                        "heading": "3.1 跨模态连接机制的研究假设",
+                        "body": "本实验假设轻量化跨模态连接模块能够在视觉编码器和语言模型之间建立更稳定的表征映射，从而提升图文对齐质量。相比单层线性投影，改进模块通过门控融合和残差路径保留视觉细节，并降低噪声特征对语言推理的干扰。实验目标是验证该假设在 VQA、图文检索和推理效率上的综合表现。"
+                    },
+                    {
+                        "heading": "3.2 VQA 与图文检索数据集构建",
+                        "body": "数据部分选取 COCO Captions、VQAv2 和 Flickr30K 等公开基准，覆盖图文描述、视觉问答和跨模态检索三类任务。预处理阶段统一图像尺寸、文本分词规则和样本过滤标准，并保持训练集、验证集和测试集划分一致，确保不同连接模块之间的比较具有可重复性。"
+                    },
+                    {
+                        "heading": "3.3 投影层、Adapter 与交叉注意力基线",
+                        "body": "对照组包括 Linear Projection、MLP Adapter 和 Cross-Attention Connector。Linear Projection 用于评估最简单连接方式的下限表现，MLP Adapter 反映非线性映射能力，Cross-Attention Connector 则作为更强但开销更高的融合基线。改进模块需要同时与这些方法比较准确率和资源消耗。"
+                    },
+                    {
+                        "heading": "3.4 准确率、Recall@K 与效率指标",
+                        "body": "评估指标由任务性能和系统效率两部分构成。Accuracy 衡量视觉问答或分类任务表现，Recall@K 衡量图文检索排序质量，Latency 记录单样本平均推理时间，Memory 记录峰值显存占用。通过这些指标可以同时观察方法有效性和部署成本。"
+                    },
+                    {
+                        "heading": "3.5 门控融合与残差路径的消融设计",
+                        "body": "消融实验分别移除门控融合、残差连接并调整投影维度，以定位各组件对性能的贡献。实验中保持数据划分、优化器、batch size 和训练轮数不变，只改变连接模块内部结构，从而保证性能差异可以归因于具体设计。"
+                    },
+                    {
+                        "heading": "3.6 可复现实验流程与预期分析",
+                        "body": "实验流程包括统一预处理、训练各基线和改进模型、记录验证集指标、在测试集评估性能与效率，并进行至少三次重复实验。最终用均值、标准差和显著性检验报告结果，预期改进连接模块能在保持较低资源开销的同时提升 VLM 的跨模态对齐能力。"
+                    }
+                ]
+            }, ensure_ascii=False)
+
+        if "科研论文写作专家" in system:
+            topic = last.split("\n", 1)[0].replace("：", "：")
+            return (
+                f"[Mock 模式] {topic}。本节围绕研究问题展开学术化说明，"
+                "结合已有文献、实验目标和系统输出，对相关方法、实验设置与结果意义进行概括。"
+                "在真实 API 模式下，该部分会由大模型生成更完整的中文学术段落。"
+            )
+
+        if any(k in system for k in ["Python 科研工程师", "Python 调试专家", "代码安全专家", "Python 专家"]):
             return """```python
 import numpy as np
 import matplotlib
@@ -294,7 +371,7 @@ print("chart saved")
                 "score":round(random.uniform(0.70,0.95),2)
             }, ensure_ascii=False)
 
-        if any(k in system for k in ["评估","评审","judge","Judge","评分","质量"]):
+        if "LLM-as-Judge" in system or "返回 JSON" in system and any(k in system for k in ["评分", "评审"]):
             score = round(random.uniform(0.62,0.90),2)
             return json.dumps({
                 "overall_score":score,

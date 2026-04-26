@@ -7,6 +7,7 @@
 import uuid
 import time
 import asyncio
+import inspect
 from enum import Enum
 from typing import Any, Optional, Callable
 from dataclasses import dataclass, field
@@ -111,6 +112,27 @@ class MessageBus:
         if agent_name not in self._queues:
             self._queues[agent_name] = asyncio.Queue()
 
+    def create_message(
+        self,
+        sender: str,
+        receiver: str,
+        task_id: str,
+        payload: Any = None,
+        msg_type: MessageType = MessageType.REQUEST,
+        session_id: str = "",
+        metadata: Optional[dict] = None,
+    ) -> Message:
+        """创建符合统一协议的消息对象，便于同步/异步流程复用。"""
+        return Message(
+            msg_type=msg_type,
+            sender=sender,
+            receiver=receiver,
+            task_id=task_id,
+            session_id=session_id,
+            payload=payload,
+            metadata=metadata or {},
+        )
+
     async def send(self, msg: Message):
         """发送消息到目标 Agent 的队列"""
         self._message_log.append(msg)
@@ -119,6 +141,88 @@ class MessageBus:
         # 触发注册的处理器
         for handler in self._handlers.get(msg.receiver, []):
             await handler(msg)
+
+    def send_sync(self, msg: Message):
+        """
+        同步流程下的消息发送。
+        当前 Orchestrator 是串行同步执行，使用该方法可以保留统一消息协议、
+        队列追踪与日志回放，不强制把业务改造成 async。
+        """
+        self._message_log.append(msg)
+        if msg.receiver in self._queues:
+            self._queues[msg.receiver].put_nowait(msg)
+
+        for handler in self._handlers.get(msg.receiver, []):
+            result = handler(msg)
+            if inspect.isawaitable(result):
+                raise RuntimeError("send_sync 不支持异步 handler，请改用 await send(msg)")
+
+    def request(
+        self,
+        sender: str,
+        receiver: str,
+        task_id: str,
+        payload: Any = None,
+        session_id: str = "",
+        metadata: Optional[dict] = None,
+    ) -> Message:
+        """记录一次任务请求消息。"""
+        msg = self.create_message(
+            sender=sender,
+            receiver=receiver,
+            task_id=task_id,
+            payload=payload,
+            msg_type=MessageType.REQUEST,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        self.send_sync(msg)
+        return msg
+
+    def response(
+        self,
+        sender: str,
+        receiver: str,
+        task_id: str,
+        payload: Any = None,
+        session_id: str = "",
+        metadata: Optional[dict] = None,
+    ) -> Message:
+        """记录一次正常响应消息。"""
+        msg = self.create_message(
+            sender=sender,
+            receiver=receiver,
+            task_id=task_id,
+            payload=payload,
+            msg_type=MessageType.RESPONSE,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        self.send_sync(msg)
+        return msg
+
+    def error(
+        self,
+        sender: str,
+        receiver: str,
+        task_id: str,
+        detail: str,
+        code: ErrorCode = ErrorCode.EXECUTION_ERROR,
+        session_id: str = "",
+        metadata: Optional[dict] = None,
+    ) -> Message:
+        """记录一次错误响应消息。"""
+        msg = Message.error(
+            sender=sender,
+            receiver=receiver,
+            task_id=task_id,
+            code=code,
+            detail=detail,
+            session_id=session_id,
+            metadata=metadata or {},
+        )
+        self.send_sync(msg)
+        return msg
 
     async def receive(self, agent_name: str, timeout: float = 30.0) -> Optional[Message]:
         """从队列接收消息，支持超时"""
@@ -143,8 +247,19 @@ class MessageBus:
             "by_type": {
                 t.value: sum(1 for m in self._message_log if m.msg_type == t)
                 for t in MessageType
-            }
+            },
+            "by_agent": {
+                agent: sum(
+                    1 for m in self._message_log
+                    if m.sender == agent or m.receiver == agent
+                )
+                for agent in self._queues
+            },
         }
+
+    def get_message_log(self) -> list[dict]:
+        """返回可序列化的消息日志，供报告或调试使用。"""
+        return [msg.to_dict() for msg in self._message_log]
 
 
 # ── 重试装饰器 ────────────────────────────────────────────────

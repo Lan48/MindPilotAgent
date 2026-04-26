@@ -192,7 +192,8 @@ class EvaluationAgent:
         self.benchmark  = BenchmarkEvaluator(llm_client, logger=logger)
 
     # ── 实验设计（新增）─────────────────────────────────────
-    def design_experiment(self, query: str, literature_result: dict) -> dict:
+    def design_experiment(self, query: str, literature_result: dict,
+                          research_path: str = "") -> dict:
         """
         基于文献综述生成完整实验设计方案。
         返回包含研究目标、方法、评估指标、对照组的结构化方案。
@@ -218,21 +219,39 @@ class EvaluationAgent:
 3. 基线方法与对照组设置（至少3个对照方法）
 4. 评估指标（定量指标的计算公式和含义）
 5. 实验流程（详细的步骤说明）
-6. 预期结果与分析方向
+6. 消融实验与变量控制（说明自变量、因变量、控制变量）
+7. 统计检验与可复现性设置
+8. 预期结果与分析方向
 
 请以 JSON 格式返回，字段：
 {
   "research_hypothesis": "研究假设...",
+  "objectives": ["目标1...", "目标2..."],
   "dataset": "数据集描述...",
   "baselines": ["基线1: 说明", "基线2: 说明", "基线3: 说明"],
   "metrics": ["指标1: 公式和说明", "指标2: 公式和说明"],
+  "variables": {"independent": ["..."], "dependent": ["..."], "controlled": ["..."]},
+  "ablations": ["消融1...", "消融2..."],
   "procedure": ["步骤1...", "步骤2...", ...],
+  "reproducibility": "随机种子、重复次数、硬件/软件环境、统计检验方法...",
   "expected_results": "预期结果分析...",
-  "full_description": "完整实验设计描述（500字以上）"
-}"""
+  "full_description": "完整实验设计描述（500字以上）",
+  "sections": [
+    {"heading": "3.1 根据研究主题自行命名的小标题", "body": "对应小节正文..."},
+    {"heading": "3.2 根据研究主题自行命名的小标题", "body": "对应小节正文..."}
+  ]
+}
 
+sections 要求：
+- 生成 5~7 个二级小节，heading 必须带 3.x 编号。
+- heading 应根据研究问题、推荐研究路径和文献方法自行命名，不要机械套用固定模板。
+- sections 整体必须覆盖：研究假设/目标、数据集/环境、基线/对照、评估指标、变量控制/消融、实验流程/可复现性、预期分析。
+- body 应直接写成可放入学术报告的正文，不要只写提纲。"""
+
+            path_part = f"推荐研究路径：\n{research_path}\n\n" if research_path else ""
             prompt = (
                 f"研究问题：{query}\n\n"
+                f"{path_part}"
                 f"相关文献方法参考：\n{methods_ref}\n\n"
                 "请设计完整的实验方案："
             )
@@ -248,14 +267,21 @@ class EvaluationAgent:
                 data = {"full_description": resp}
 
             result = {
+                "research_path":       research_path,
                 "research_hypothesis": data.get("research_hypothesis", ""),
+                "objectives":          data.get("objectives", []),
                 "dataset":             data.get("dataset", ""),
                 "baselines":           data.get("baselines", []),
                 "metrics":             data.get("metrics", []),
+                "variables":           data.get("variables", {}),
+                "ablations":           data.get("ablations", []),
                 "procedure":           data.get("procedure", []),
+                "reproducibility":     data.get("reproducibility", ""),
                 "expected_results":    data.get("expected_results", ""),
                 "full_description":    data.get("full_description", resp),
+                "sections":            self._normalize_experiment_sections(data.get("sections", [])),
             }
+            result["structured_summary"] = self._format_experiment_design(result)
             self.logger.finish_call(call, result)
             self.logger.success(self.AGENT_NAME, "实验设计方案生成完成")
             return result
@@ -403,6 +429,14 @@ class EvaluationAgent:
                 "③ 基线方法（至少3个）；④ 评估指标及计算公式；⑤ 实验流程。",
                 min_words=400
             )
+            exp_design = {**exp_design, "full_description": exp_desc}
+        exp_summary = exp_design.get("structured_summary") or self._format_experiment_design(exp_design)
+        exp_sections = self._normalize_experiment_sections(exp_design.get("sections", []))
+        if not exp_sections:
+            exp_sections = [{
+                "heading": "3.1 实验设计补充说明",
+                "body": exp_summary,
+            }]
 
         # 4. 方法论
         self.logger.info(self.AGENT_NAME, "生成方法论描述...")
@@ -440,13 +474,11 @@ class EvaluationAgent:
             "sections": [
                 {"heading": "一、研究背景与问题陈述", "body": bg,          "level": 1},
                 {"heading": "二、文献综述",           "body": lit_full,     "level": 1},
-                {"heading": "三、实验设计与方法论",    "body": exp_desc,     "level": 1},
-                {"heading": "3.1 实验假设与目标",
-                 "body": exp_design.get("research_hypothesis","（见上节实验设计）"), "level": 2},
-                {"heading": "3.2 评估指标",
-                 "body": "\n".join(exp_design.get("metrics", [])) or "见实验设计描述", "level": 2},
-                {"heading": "3.3 基线方法",
-                 "body": "\n".join(exp_design.get("baselines", [])) or "见实验设计描述", "level": 2},
+                {"heading": "三、实验设计与方法论",    "body": exp_summary,  "level": 1},
+                *[
+                    {"heading": sec["heading"], "body": sec["body"], "level": 2}
+                    for sec in exp_sections
+                ],
                 {"heading": "四、核心方法实现",       "body": method_desc,  "level": 1},
                 {"heading": "五、实验结果与分析",      "body": result_desc,  "level": 1},
                 {"heading": "六、结论与展望",          "body": conclusion_desc, "level": 1},
@@ -469,6 +501,94 @@ class EvaluationAgent:
             {"role": "user", "content": prompt}
         ], max_tokens=2048)
         return resp if resp else f"（内容生成中，请参考问题：{prompt[:100]}）"
+
+    def _normalize_experiment_sections(self, sections: Any) -> list[dict]:
+        """清洗模型返回的实验设计小节，报告生成只消费 heading/body。"""
+        if not isinstance(sections, list):
+            return []
+
+        normalized = []
+        for idx, sec in enumerate(sections, 1):
+            if not isinstance(sec, dict):
+                continue
+            heading = str(sec.get("heading", "")).strip()
+            body = str(sec.get("body", "")).strip()
+            if not heading or not body:
+                continue
+            if not heading.startswith("3."):
+                heading = f"3.{idx} {heading}"
+            normalized.append({"heading": heading, "body": body})
+        return normalized
+
+    def _format_experiment_part(self, items: Any, fallback: str = "") -> str:
+        """把实验设计字段稳定格式化，避免报告中出现一整段散文。"""
+        if isinstance(items, str):
+            return items.strip() or fallback
+        if isinstance(items, dict):
+            lines = []
+            for key, value in items.items():
+                if isinstance(value, list):
+                    value = "；".join(str(v) for v in value if str(v).strip())
+                if str(value).strip():
+                    lines.append(f"{key}：{value}")
+            return "\n".join(lines) if lines else fallback
+        if isinstance(items, list):
+            cleaned = [str(item).strip() for item in items if str(item).strip()]
+            return "\n".join(f"{idx}. {item}" for idx, item in enumerate(cleaned, 1)) if cleaned else fallback
+        return fallback
+
+    def _format_variables_and_ablations(self, exp_design: dict) -> str:
+        variables = exp_design.get("variables", {}) or {}
+        lines = []
+        if isinstance(variables, dict):
+            label_map = {
+                "independent": "自变量",
+                "dependent": "因变量",
+                "controlled": "控制变量",
+            }
+            for key, label in label_map.items():
+                value = variables.get(key, [])
+                if isinstance(value, list):
+                    value = "；".join(str(v) for v in value if str(v).strip())
+                if str(value).strip():
+                    lines.append(f"{label}：{value}")
+        ablations = self._format_experiment_part(exp_design.get("ablations", []))
+        if ablations:
+            lines.append("消融实验：\n" + ablations)
+        return "\n".join(lines) if lines else "本节通过固定训练配置、数据划分和评价协议，比较关键组件加入或移除后的性能变化。"
+
+    def _format_experiment_design(self, exp_design: dict) -> str:
+        """生成第 3 章开头的结构化总述。"""
+        pieces = []
+        overview = exp_design.get("full_description", "")
+        if overview:
+            pieces.append(overview.strip())
+
+        hypothesis = exp_design.get("research_hypothesis", "")
+        if hypothesis:
+            pieces.append(f"研究假设：{hypothesis.strip()}")
+
+        dataset = exp_design.get("dataset", "")
+        if dataset:
+            pieces.append(f"数据与环境：{dataset.strip()}")
+
+        baselines = self._format_experiment_part(exp_design.get("baselines", []))
+        if baselines:
+            pieces.append("基线与对照组：\n" + baselines)
+
+        metrics = self._format_experiment_part(exp_design.get("metrics", []))
+        if metrics:
+            pieces.append("核心评估指标：\n" + metrics)
+
+        procedure = self._format_experiment_part(exp_design.get("procedure", []))
+        if procedure:
+            pieces.append("实验流程概览：\n" + procedure)
+
+        expected = exp_design.get("expected_results", "")
+        if expected:
+            pieces.append(f"预期分析方向：{expected.strip()}")
+
+        return "\n\n".join(pieces) if pieces else "本章从研究假设、数据集、基线方法、评估指标、实验流程和可复现性设置六个方面组织实验设计。"
 
     def _print_result(self, score: EvalScore, log: list, reports: dict):
         print(f"\n{'━'*58}")
