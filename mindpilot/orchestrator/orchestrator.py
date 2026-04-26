@@ -16,7 +16,7 @@ from typing import Optional
 
 from config import CONFIG
 from framework.logger import MindPilotLogger
-from framework.communication import MessageBus, HumanInTheLoop
+from framework.communication import ErrorCode, MessageBus, HumanInTheLoop
 from framework.scheduler import SyncScheduler, Task
 from memory.memory_store import MemoryStore
 from tools.llm_client import LLMClient
@@ -42,6 +42,7 @@ class MindPilotOrchestrator:
             verbose=self.config.verbose,
         )
         self.bus        = MessageBus()
+        self._register_message_endpoints()
         self.human_loop = HumanInTheLoop(enabled=False)
 
         self.llm = LLMClient(self.config)
@@ -76,7 +77,9 @@ class MindPilotOrchestrator:
 
         # ── Step 1: 任务规划 ──────────────────────────────────
         self.logger.info("Orchestrator", "【Step 1/6】 任务规划（ToT + ReAct）...")
+        self._send_request("PlanningAgent", "planning", {"query": query})
         plan = self.planner.run(query)
+        self._send_response("PlanningAgent", "planning", {"plan_id": plan.plan_id, "tasks": len(plan.tasks)})
         self.planner.print_plan(plan)
 
         # ── Step 2: 文献检索 ──────────────────────────────────
@@ -87,17 +90,39 @@ class MindPilotOrchestrator:
                 (t for t in plan.tasks if t.agent == "LiteratureAgent"), None
             )
             desc = lit_task.description if lit_task else f"检索关于「{query}」的学术文献"
+            self._send_request("LiteratureAgent", "literature_search", {"description": desc, "query": query})
             lit_result = self.lit_agent.run(desc, query)
+            self._send_response("LiteratureAgent", "literature_search", {
+                "total_found": lit_result.get("total_found", 0),
+                "top_papers": len(lit_result.get("top_papers", [])),
+            })
         except Exception as e:
+            self._send_error("LiteratureAgent", "literature_search", e)
             self.logger.error("Orchestrator", f"文献检索失败: {e}")
 
         # ── Step 3: 实验设计 ──────────────────────────────────
         self.logger.info("Orchestrator", "【Step 3/6】 实验设计方案生成...")
         exp_design = {}
         try:
-            exp_design = self.eval_agent.design_experiment(query, lit_result)
+            self._send_request("EvaluationAgent", "experiment_design", {
+                "query": query,
+                "papers": len(lit_result.get("top_papers", [])),
+                "research_path": plan.selected_path,
+            })
+            exp_design = self.eval_agent.design_experiment(
+                query,
+                lit_result,
+                research_path=plan.selected_path,
+            )
+            self._send_response("EvaluationAgent", "experiment_design", {
+                "baselines": len(exp_design.get("baselines", [])),
+                "metrics": len(exp_design.get("metrics", [])),
+                "sections": len(exp_design.get("sections", [])),
+                "procedure": len(exp_design.get("procedure", [])),
+            })
             self._print_exp_design(exp_design)
         except Exception as e:
+            self._send_error("EvaluationAgent", "experiment_design", e)
             self.logger.error("Orchestrator", f"实验设计失败: {e}")
 
         # ── Step 4: 代码实现 ──────────────────────────────────
@@ -116,8 +141,17 @@ class MindPilotOrchestrator:
                 "baselines":    exp_design.get("baselines", []),
                 "metrics":      exp_design.get("metrics", []),
             }
+            self._send_request("CodeAgent", "code_generation", {
+                "description": code_desc,
+                "has_experiment_design": bool(exp_design),
+            })
             code_result = self.code_agent.run(code_desc, context=context)
+            self._send_response("CodeAgent", "code_generation", {
+                "success": code_result.get("success", False),
+                "rounds": code_result.get("total_rounds", 0),
+            })
         except Exception as e:
+            self._send_error("CodeAgent", "code_generation", e)
             self.logger.error("Orchestrator", f"代码生成失败: {e}")
 
         # ── Step 5: 数据分析 ──────────────────────────────────
@@ -129,10 +163,19 @@ class MindPilotOrchestrator:
             )
             ana_desc = ana_task.description if ana_task else f"分析「{query}」的实验结果"
             code_stdout = code_result.get("stdout", "")
+            self._send_request("AnalysisAgent", "data_analysis", {
+                "description": ana_desc,
+                "has_code_output": bool(code_stdout),
+            })
             analysis_result = self.analysis_agent.run(
                 ana_desc, code_output=code_stdout
             )
+            self._send_response("AnalysisAgent", "data_analysis", {
+                "charts": len(analysis_result.get("charts", [])),
+                "has_conclusion": bool(analysis_result.get("conclusion", "")),
+            })
         except Exception as e:
+            self._send_error("AnalysisAgent", "data_analysis", e)
             self.logger.error("Orchestrator", f"数据分析失败: {e}")
 
         # ── Step 6: 评估反思 + 报告生成 ──────────────────────
@@ -149,11 +192,19 @@ class MindPilotOrchestrator:
             "analysis":          analysis_result.get("conclusion", ""),
             "charts":            analysis_result.get("charts", []),
         }
+        self._send_request("EvaluationAgent", "evaluation", {
+            "sections": ["literature", "experiment", "code", "analysis"],
+        })
         eval_result = self.eval_agent.run(query, aggregated)
+        self._send_response("EvaluationAgent", "evaluation", {
+            "score": eval_result.get("final_score", {}).get("overall"),
+            "reports": list(eval_result.get("report_files", {}).keys()),
+        })
 
         # ── 收尾 ──────────────────────────────────────────────
         self.memory.save_long_term()
-        session_summary = self.logger.save_summary()
+        bus_stats = self.bus.get_stats()
+        session_summary = self.logger.save_summary(extra={"message_bus": bus_stats})
         self.logger.print_call_chain()
 
         total_time  = round(time.time() - start_time, 2)
@@ -169,9 +220,55 @@ class MindPilotOrchestrator:
             "report_files": eval_result.get("report_files", {}),
             "total_time_s": total_time,
             "session_log":  str(self.logger.log_file),
+            "message_bus":  bus_stats,
         }
         self._print_final_summary(final_result, total_time)
         return final_result
+
+    def _register_message_endpoints(self):
+        for agent in [
+            "Orchestrator",
+            "PlanningAgent",
+            "LiteratureAgent",
+            "CodeAgent",
+            "AnalysisAgent",
+            "EvaluationAgent",
+        ]:
+            self.bus.register(agent)
+
+    def _send_request(self, receiver: str, task_id: str, payload: dict):
+        msg = self.bus.request(
+            sender="Orchestrator",
+            receiver=receiver,
+            task_id=task_id,
+            payload=payload,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
+
+    def _send_response(self, sender: str, task_id: str, payload: dict):
+        msg = self.bus.response(
+            sender=sender,
+            receiver="Orchestrator",
+            task_id=task_id,
+            payload=payload,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
+
+    def _send_error(self, sender: str, task_id: str, error: Exception):
+        msg = self.bus.error(
+            sender=sender,
+            receiver="Orchestrator",
+            task_id=task_id,
+            detail=str(error),
+            code=ErrorCode.EXECUTION_ERROR,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
 
     def _print_exp_design(self, exp: dict):
         print(f"\n{'━'*60}")
