@@ -284,33 +284,84 @@ class AnalysisAgent:
     def _generate_charts(self, df, intent: str, chart_type: str, title: str) -> list:
         """生成图表"""
         charts = []
-        import numpy as np
         num_cols = df.select_dtypes(include="number").columns.tolist()
+        cat_cols = df.select_dtypes(include="object").columns.tolist()
 
         # 主图表
         if num_cols:
             data_for_chart = df[num_cols[0]].tolist()
+            chart_title = f"{num_cols[0]} Distribution"
+            x_label = num_cols[0]
+            y_label = "Frequency"
+
             if chart_type == "scatter" and len(num_cols) >= 2:
                 data_for_chart = {"x": df[num_cols[0]].tolist(),
                                   "y": df[num_cols[1]].tolist()}
+                chart_title = f"{num_cols[1]} vs {num_cols[0]} Scatter"
+                x_label = num_cols[0]
+                y_label = num_cols[1]
             elif chart_type == "barplot":
-                cat_cols = df.select_dtypes(include="object").columns.tolist()
                 if cat_cols:
                     vc = df[cat_cols[0]].value_counts()
                     data_for_chart = dict(zip(vc.index.tolist(), vc.values.tolist()))
+                    chart_title = f"{cat_cols[0]} Count"
+                    x_label = cat_cols[0]
+                    y_label = "Count"
+                else:
+                    compare_cols = num_cols[:4]
+                    mean_values = {
+                        col: round(float(df[col].dropna().mean()), 4)
+                        for col in compare_cols
+                    }
+                    data_for_chart = mean_values
+                    chart_title = "Group Mean Comparison"
+                    x_label = "Metric Group"
+                    y_label = "Mean Value"
+            elif chart_type == "lineplot":
+                chart_title = f"Trend of {num_cols[0]}"
+                x_label = "Index"
+                y_label = num_cols[0]
+            elif chart_type == "histogram":
+                chart_title = f"Distribution of {num_cols[0]}"
+                x_label = num_cols[0]
+                y_label = "Frequency"
 
             ch = self.visualizer.plot(chart_type, data_for_chart,
-                                      title=f"{title[:30]} - {chart_type}",
-                                      filename=f"main_{chart_type}")
+                                      title=chart_title,
+                                      filename=f"main_{chart_type}",
+                                      x_label=x_label,
+                                      y_label=y_label)
             charts.append(ch)
+
+            # 比较任务中补充分布图，避免仅看均值导致信息损失
+            if intent == "comparison" and len(num_cols) >= 2:
+                compare_cols = num_cols[:4]
+                box_data = {
+                    col: df[col].dropna().tolist()
+                    for col in compare_cols
+                }
+                box = self.visualizer.plot(
+                    "boxplot",
+                    box_data,
+                    title="Group Distribution Comparison",
+                    filename="group_distribution_boxplot",
+                    x_label="Metric Group",
+                    y_label="Value"
+                )
+                charts.append(box)
 
         # 补充相关性热力图（若有多列数值）
         if len(num_cols) >= 2 and intent in ("correlation", "eda"):
             try:
-                corr_matrix = df[num_cols[:5]].corr().values.tolist()
+                corr_cols = num_cols[:5]
+                corr_matrix = df[corr_cols].corr().values.tolist()
                 ch2 = self.visualizer.plot("heatmap", corr_matrix,
-                                           title="特征相关性矩阵",
-                                           filename="correlation_heatmap")
+                                           title="Feature Correlation Matrix",
+                                           filename="correlation_heatmap",
+                                           x_label="Features",
+                                           y_label="Features",
+                                           x_tick_labels=corr_cols,
+                                           y_tick_labels=corr_cols)
                 charts.append(ch2)
             except Exception:
                 pass
