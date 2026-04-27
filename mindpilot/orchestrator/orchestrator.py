@@ -51,6 +51,7 @@ class MindPilotOrchestrator:
             logger=self.logger,
         )
         self.arxiv = ArXivSearchTool(
+            llm_client=self.llm,
             max_results=self.config.literature.arxiv_max_results,
             logger=self.logger,
         )
