@@ -80,7 +80,8 @@ class MindPilotOrchestrator:
             session_id=self.session_id,
             logger=self.logger,
         )
-        self.arxiv      = ArXivSearchTool(
+        self.arxiv = ArXivSearchTool(
+            llm_client=self.llm,
             max_results=self.config.literature.arxiv_max_results,
             logger=self.logger,
         )
