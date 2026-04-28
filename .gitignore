@@ -1,3 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+eggs/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Pytest
+.pytest_cache/
+
+# Editor directories and files
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# Model / data artifacts (optional)
+*.pth
+*.pt
+*.h5
+*.hdf5
+*.ckpt
+
+# Ignore compiled python files explicitly
+*.pyc
 # Python 字节码缓存，绝对不要提交
 __pycache__/
 *.pyc
