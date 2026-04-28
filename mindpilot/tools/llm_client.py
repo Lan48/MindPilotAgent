@@ -199,32 +199,79 @@ class LLMClient:
 
     # ── 对话接口 ────────────────────────────────────────────
     def chat(self, messages: list[dict], model: Optional[str] = None,
-             temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-             use_code_model: bool = False) -> str:
-        if self.mock_mode:
-            return self._mock_response(messages)
+            temperature: Optional[float] = None, max_tokens: Optional[int] = None,
+            use_code_model: bool = False) -> str:
 
         chosen_model = model or (
             self.config.llm.code_model if use_code_model else self.config.llm.model
         )
+
+        # 代码模型使用单独参数；普通模型使用通用参数
+        default_temperature = (
+            getattr(self.config.llm, "code_temperature", self.config.llm.temperature)
+            if use_code_model else self.config.llm.temperature
+        )
+        default_max_tokens = (
+            getattr(self.config.llm, "code_max_tokens", self.config.llm.max_tokens)
+            if use_code_model else self.config.llm.max_tokens
+        )
+
+        actual_temperature = temperature if temperature is not None else default_temperature
+        actual_max_tokens = max_tokens or default_max_tokens
+
+        print(
+            f"[LLM DEBUG] mock_mode={self.mock_mode}, "
+            f"use_code_model={use_code_model}, "
+            f"model={'MOCK' if self.mock_mode else chosen_model}, "
+            f"temperature={actual_temperature}, "
+            f"max_tokens={actual_max_tokens}"
+        )
+
+        if self.mock_mode:
+            print("[LLM DEBUG] returning from mock")
+            content = self._mock_response(messages)
+            print("[LLM DEBUG] first 80 chars:", repr(content[:80]))
+            return content
+
         client = self._client_code if use_code_model else self._client
 
         try:
             resp = client.chat.completions.create(
                 model=chosen_model,
                 messages=messages,
-                temperature=temperature if temperature is not None else self.config.llm.temperature,
-                max_tokens=max_tokens or self.config.llm.max_tokens,
+                temperature=actual_temperature,
+                max_tokens=actual_max_tokens,
             )
-            return resp.choices[0].message.content
+
+            content = resp.choices[0].message.content or ""
+            finish_reason = getattr(resp.choices[0], "finish_reason", None)
+
+            print("[LLM DEBUG] returning from real api")
+            print("[LLM DEBUG] finish_reason:", finish_reason)
+            print("[LLM DEBUG] first 80 chars:", repr(content[:80]))
+
+            if finish_reason == "length":
+                print(
+                    "[LLM WARNING] 输出可能因为 max_tokens 上限被截断，"
+                    "建议增大 CODE_MAX_TOKENS 或缩小代码生成任务。"
+                )
+
+            return content
+
         except Exception as e:
             err_msg = self._explain(str(e))
             print(f"[LLMClient] ✗ 调用失败 (model={chosen_model}): {err_msg}")
-            # 400 模型名错误时给出具体建议
+
             if "400" in str(e) and "not supported" in str(e).lower():
-                print(f"            → 请将 .env 中 {'CODE_MODEL' if use_code_model else 'LLM_MODEL'} "
-                      f"改为百炼支持的模型名（如 qwen3-coder-plus / glm-5）")
-            return self._mock_response(messages, error=str(e))
+                print(
+                    f"            → 请将 .env 中 {'CODE_MODEL' if use_code_model else 'LLM_MODEL'} "
+                    f"改为百炼支持的模型名（如 qwen3-coder-plus / glm-5）"
+                )
+
+            print("[LLM DEBUG] returning from mock")
+            content = self._mock_response(messages, error=str(e))
+            print("[LLM DEBUG] first 80 chars:", repr(content[:80]))
+            return content
 
     def chat_code(self, messages: list[dict], **kwargs) -> str:
         return self.chat(messages, use_code_model=True, **kwargs)

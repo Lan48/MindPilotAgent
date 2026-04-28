@@ -109,14 +109,8 @@ class MindPilotOrchestrator:
             )
             code_desc = code_task.description if code_task else f"为「{query}」实现核心算法"
 
-            # 把文献方法和实验设计作为代码生成的上下文
-            context = {
-                "top_papers":   lit_result.get("top_papers", [])[:3],
-                "exp_design":   exp_design,
-                "baselines":    exp_design.get("baselines", []),
-                "metrics":      exp_design.get("metrics", []),
-            }
-            code_result = self.code_agent.run(code_desc, context=context)
+            #删除文献上下文，只看实验设计
+            code_result = self.code_agent.run(code_desc)
         except Exception as e:
             self.logger.error("Orchestrator", f"代码生成失败: {e}")
 
