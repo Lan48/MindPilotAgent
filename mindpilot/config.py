@@ -28,16 +28,26 @@ class LLMConfig:
     api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY", "mock"))
     base_url: str = field(default_factory=lambda: os.getenv(
         "LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"))
+
     # 通用对话模型（规划、文献摘要、评估等）
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "glm-5"))
-    # 代码生成专用模型（注意：qwen3-coder-plus，带"3"）
+
+    # 代码生成专用模型
     code_model: str = field(default_factory=lambda: os.getenv("CODE_MODEL", "qwen3-coder-plus"))
-    temperature: float = 0.3
-    max_tokens: int = 2048
+
+    # 通用对话参数
+    temperature: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.3")))
+    max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "2048")))
+
+    # 代码生成专用参数
+    code_temperature: float = field(default_factory=lambda: float(os.getenv("CODE_TEMPERATURE", "0.1")))
+    code_max_tokens: int = field(default_factory=lambda: int(os.getenv("CODE_MAX_TOKENS", "4096")))
+
     # timeout 设为 180s：glm-5 等深度思考模型单次响应可能需要 60~120s，
     # 用 60s 会导致调用被误判超时后静默降级到 Mock 响应。
     # 这是保证 Agent 能力的关键参数：超时太短 = 实际上没有调用真实模型。
     timeout: int = 180
+
     proxy_url: Optional[str] = field(
         default_factory=lambda: os.getenv("LLM_PROXY_URL", "") or None)
 
