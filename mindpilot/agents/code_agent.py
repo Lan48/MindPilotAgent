@@ -5,8 +5,8 @@
 AST 静态安全检测 + 受限沙箱执行。
 """
 
-import json
-import re
+import ast
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,28 +38,31 @@ class CodeAgent:
         self.memory = memory_store
         self.logger = logger
         self.max_rounds = config.code.max_debug_rounds
+        # debug
+        self.debug_mode = os.getenv("MP_DEBUG", "0") == "1"
 
-    def run(self, task_description: str, context: dict = None) -> dict:
+    def run(self, task_description: str) -> dict:
         """
         主入口：生成并执行代码，自动调试
         """
         call = self.logger.start_call(self.AGENT_NAME, "code_generation", task_description)
         session = CodeSession(task_id=call.call_id, requirement=task_description)
-        context = context or {}
 
         try:
-            # Step 1: 从记忆检索相似代码
-            similar = self.memory.search(task_description, top_k=3, agent_filter=self.AGENT_NAME)
-            context_hint = ""
-            if similar:
-                self.logger.info(self.AGENT_NAME, f"记忆检索：{len(similar)} 条相似代码记录")
-                context_hint = f"\n参考历史：{similar[0].content[:200]}"
-
-            # Step 2: 初始代码生成
+            # Step 1: 初始代码生成（只基于任务描述）
             self.logger.info(self.AGENT_NAME, "生成初始代码...")
-            code = self._generate_code(task_description, context_hint, context)
+            code = self._generate_code(task_description)
 
-            # Step 3: 执行 + 自动调试循环
+            quick_issues = self._quick_validate_code(code)
+            if quick_issues:
+                self.logger.warning(
+                    self.AGENT_NAME,
+                    f"初始代码快速校验失败: {quick_issues[0]}"
+                )
+                code = self._regenerate_clean_code(task_description, code)
+
+
+            # Step 2: 执行 + 自动调试循环
             for round_num in range(1, self.max_rounds + 1):
                 self.logger.info(self.AGENT_NAME, f"第 {round_num}/{self.max_rounds} 轮执行...")
 
@@ -156,40 +159,44 @@ class CodeAgent:
             self.logger.fail_call(call, str(e))
             raise
 
-    def _generate_code(self, requirement: str, context_hint: str, extra_ctx: dict) -> str:
-        """初始代码生成"""
-        papers_hint = ""
-        if extra_ctx.get("top_papers"):
-            methods = [
-                p.get("structured_summary", {}).get("method", "")
-                for p in extra_ctx["top_papers"][:2]
-                if p.get("structured_summary")
-            ]
-            if methods:
-                papers_hint = f"\n参考文献方法：{'; '.join(m for m in methods if m)}"
-
-        system = (
-            "你是资深 Python 科研工程师。请根据需求生成高质量、可直接运行的 Python 代码。\n"
-            "要求：\n"
-            "1. 只使用标准库、numpy、pandas、matplotlib、sklearn、scipy\n"
-            "2. 添加中文注释\n"
-            "3. 包含完整的错误处理\n"
-            "4. 最后 print 关键结果\n"
-            "5. 使用 matplotlib.use('Agg') 避免 GUI 报错\n"
-            "只输出代码块，不要解释。"
+    def _generate_code(self, requirement: str) -> str:
+        """初始代码生成（只基于任务描述）"""
+        system = ( 
+                "你是资深 Python 科研工程师。请根据需求生成高质量、可直接运行的 Python 代码。\n"
+                "要求：\n"
+                "1. 添加中文注释。\n"
+                "2. 包含完整的错误处理。\n"
+                "3. 代码必须是轻量级可运行示例，不要下载外部模型、数据集或权重文件。\n"
+                "4. 不要依赖本地不存在的数据路径。\n"
+                "5. 如果任务涉及 YOLO、Transformer、CLIP 等大型模型，请用合成数据或简化模型模拟核心优化思想。\n"
+                "6. 最后必须 print 可供后续分析的关键数值结果，例如 loss、accuracy、latency、model_size、speedup 等。\n"
+                "7. 建议按如下格式打印：\n"
+                "print('ANALYSIS_RESULT_START')\n"
+                "print('accuracy=0.91')\n"
+                "print('loss=0.12')\n"
+                "print('latency_ms=12.5')\n"
+                "print('ANALYSIS_RESULT_END')\n"
+                "8. 只输出纯 Python 代码，不要 markdown，不要解释。"
+            
         )
-        prompt = f"需求：{requirement}{papers_hint}{context_hint}"
+        prompt = f"需求：{requirement}"
         resp = self.llm.chat_code([
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ])
-        return self.executor.extract_code(resp)
+
+        extracted = self.executor.extract_code(resp)
+
+        self._save_debug_file("generate_raw.txt", str(resp))
+        self._save_debug_file("generate_extracted.py", extracted)
+
+        return extracted
 
     def _debug_code(self, code: str, error: str, error_type: str, requirement: str) -> str:
         """根据错误信息自动修复代码"""
         system = (
             "你是 Python 调试专家。根据错误信息修复以下代码。"
-            "只输出修复后的完整代码块，不要解释。"
+            "只输出修复后的纯 Python 完整代码，不要 markdown，不要解释。"
         )
         prompt = (
             f"原始需求：{requirement}\n\n"
@@ -201,13 +208,20 @@ class CodeAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ])
-        return self.executor.extract_code(resp)
+
+        extracted = self.executor.extract_code(resp)
+
+        self._save_debug_file("debug_raw.txt", str(resp))
+        self._save_debug_file("debug_extracted.py", extracted)
+
+        return extracted
 
     def _fix_safety_issues(self, code: str, issues: list[str]) -> str:
         """修复安全问题"""
         system = (
             "你是代码安全专家。以下代码存在安全问题，请移除危险操作，"
-            "替换为安全的等价实现。只输出修复后的代码块。"
+            "替换为安全的等价实现。可以保留正常科研计算库（包括 PyTorch、NumPy、Pandas 等），"
+            "只输出修复后的纯 Python 完整代码，不要 markdown，不要解释。"
         )
         prompt = f"安全问题：{'; '.join(issues)}\n\n代码：\n```python\n{code}\n```"
         resp = self.llm.chat_code([
@@ -245,7 +259,8 @@ class CodeAgent:
             return ""
         system = (
             "为以下 Python 代码生成简单的单元测试（使用 unittest）。"
-            "只测试核心逻辑，假设环境中有 numpy、pandas。只输出代码块。"
+            "只测试核心逻辑，可使用代码本身依赖的常见科学计算/深度学习库（如 NumPy、Pandas、PyTorch）。"
+            "只输出纯 Python 代码，不要 markdown，不要解释。"
         )
         resp = self.llm.chat_code([
             {"role": "system", "content": system},
@@ -259,9 +274,41 @@ class CodeAgent:
         print(f"{'━'*58}")
         print(f"  需求: {session.requirement[:55]}")
         print(f"  状态: {'✓ 成功' if session.success else '✗ 失败'} | "
-              f"轮次: {session.total_rounds} | Pass@1: {session.pass_at_1}")
+            f"轮次: {session.total_rounds} | Pass@1: {session.pass_at_1}")
         for it in session.iterations:
             icon = "✓" if it["success"] else "✗"
             print(f"  轮{it['round']}: {icon} [{it['duration']}s] "
-                  f"{'OK' if it['success'] else it['stderr'][:40]}")
+                f"{'OK' if it['success'] else it['stderr'][:40]}")
         print(f"{'━'*58}\n")
+
+    def _save_debug_file(self, filename: str, content: str):
+        if not self.debug_mode:
+            return
+
+        debug_dir = "debug_outputs"
+        os.makedirs(debug_dir, exist_ok=True)
+
+        path = os.path.join(debug_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content if content is not None else "")
+
+    def _quick_validate_code(self, code: str) -> list[str]:
+        """对生成代码做轻量校验，返回问题列表"""
+        issues = []
+
+        if not code or not code.strip():
+            issues.append("生成代码为空")
+            return issues
+
+        # 长度过短，通常说明生成失败或提取失败
+        if len(code.strip()) < 50:
+            issues.append("生成代码过短，疑似不完整")
+
+        # 先检查语法
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            issues.append(f"语法错误: {e}")
+            return issues
+
+        return issues

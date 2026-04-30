@@ -2,15 +2,15 @@
 ArXiv 文献检索工具
 ==================
 对接 ArXiv API，实现关键词检索与元数据提取。
+已升级：使用 LLM 动态进行中英文学术词汇翻译。
 """
 
 import re
-import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 
 @dataclass
@@ -48,164 +48,69 @@ class Paper:
         return f"[{self.arxiv_id}] {self.title} — {authors_str} ({self.published[:4]})"
 
 
-# ── 中文 → 英文关键词映射（ArXiv API 仅支持英文检索）─────────
-_CN_TO_EN: dict[str, str] = {
-    # 模型架构
-    "transformer": "transformer",
-    "transformer架构": "transformer architecture",
-    "注意力机制": "attention mechanism",
-    "自注意力": "self-attention",
-    "多头注意力": "multi-head attention",
-    "位置编码": "positional encoding",
-    "前馈网络": "feed-forward network",
-    # 大语言模型
-    "大语言模型": "large language model",
-    "大模型": "large language model",
-    "预训练": "pre-training",
-    "微调": "fine-tuning",
-    "提示学习": "prompt learning",
-    "上下文学习": "in-context learning",
-    "思维链": "chain of thought",
-    "强化学习": "reinforcement learning",
-    "人类反馈": "reinforcement learning from human feedback",
-    # 视觉
-    "视觉": "vision",
-    "图像分类": "image classification",
-    "目标检测": "object detection",
-    "图像分割": "image segmentation",
-    "卷积神经网络": "convolutional neural network",
-    "视觉transformer": "vision transformer",
-    # 训练方法
-    "对比学习": "contrastive learning",
-    "自监督学习": "self-supervised learning",
-    "半监督学习": "semi-supervised learning",
-    "迁移学习": "transfer learning",
-    "元学习": "meta-learning",
-    "联邦学习": "federated learning",
-    "知识蒸馏": "knowledge distillation",
-    # 优化
-    "梯度下降": "gradient descent",
-    "反向传播": "backpropagation",
-    "批归一化": "batch normalization",
-    "dropout": "dropout",
-    "过拟合": "overfitting",
-    # 图神经网络
-    "图神经网络": "graph neural network",
-    "图卷积网络": "graph convolutional network",
-    "知识图谱": "knowledge graph",
-    # 生成模型
-    "生成对抗网络": "generative adversarial network",
-    "变分自编码器": "variational autoencoder",
-    "扩散模型": "diffusion model",
-    # NLP
-    "自然语言处理": "natural language processing",
-    "文本分类": "text classification",
-    "情感分析": "sentiment analysis",
-    "机器翻译": "machine translation",
-    "命名实体识别": "named entity recognition",
-    "问答系统": "question answering",
-    "信息检索": "information retrieval",
-    # 推荐系统
-    "推荐系统": "recommendation system",
-    "协同过滤": "collaborative filtering",
-    # Agent
-    "智能体": "agent",
-    "多智能体": "multi-agent",
-    "强化学习": "reinforcement learning",
-    # 数据
-    "数据增强": "data augmentation",
-    "数据集": "dataset",
-    "基准测试": "benchmark",
-    # 通用
-    "深度学习": "deep learning",
-    "机器学习": "machine learning",
-    "人工智能": "artificial intelligence",
-    "神经网络": "neural network",
-    "循环神经网络": "recurrent neural network",
-    "长短时记忆": "long short-term memory",
-    "架构": "architecture",
-    "模型": "model",
-    "训练": "training",
-    "推理": "inference",
-    "效率": "efficiency",
-    "性能": "performance",
-    "评估": "evaluation",
-    "实验": "experiment",
-    "分类": "classification",
-    "回归": "regression",
-    "聚类": "clustering",
-}
-
-
 def _contains_chinese(text: str) -> bool:
     """判断字符串中是否包含中文字符"""
-    return any('一' <= c <= '鿿' for c in text)
-
-
-def _translate_query(query: str) -> tuple[str, bool]:
-    """
-    将查询词转换为英文（ArXiv 仅支持英文检索）。
-    返回 (英文查询词, 是否发生了翻译)
-    """
-    if not _contains_chinese(query):
-        return query, False
-
-    q = query.strip()
-    # 先尝试完整短语匹配
-    if q in _CN_TO_EN:
-        return _CN_TO_EN[q], True
-
-    # 逐词/短语替换（按词长降序，优先替换长短语）
-    result = q
-    sorted_terms = sorted(_CN_TO_EN.keys(), key=len, reverse=True)
-    for cn_term in sorted_terms:
-        if cn_term in result:
-            result = result.replace(cn_term, ' ' + _CN_TO_EN[cn_term] + ' ')
-
-    # 去除剩余无法翻译的中文字符
-    result = re.sub(r'[一-鿿]+', ' ', result)
-    # 清理多余空格
-    result = re.sub(r'\s+', ' ', result).strip()
-
-    if not result:
-        english_parts = re.sub(r'[一-鿿]+', ' ', q).strip()
-        result = english_parts if english_parts else "deep learning"
-
-    return result, True
+    return any('\u4e00' <= c <= '\u9fff' for c in text)
 
 
 class ArXivSearchTool:
     """
     ArXiv 文献检索工具
     使用官方 Atom API（无需 Key）
-    自动将中文查询词翻译为英文
+    自动使用 LLM 将中文查询词翻译为学术英文
     """
 
     BASE_URL = "http://export.arxiv.org/api/query"
     NS = {"atom": "http://www.w3.org/2005/Atom",
           "arxiv": "http://arxiv.org/schemas/atom"}
 
-    def __init__(self, max_results: int = 10, logger=None):
+    def __init__(self, llm_client: Any, max_results: int = 10, logger=None):
+        # 注入 LLM 客户端用于翻译
+        self.llm = llm_client
         self.max_results = max_results
         self.logger = logger
+
+    def _translate_query_with_llm(self, query: str) -> tuple[str, bool]:
+        """使用 LLM 将中文查询翻译为英文词组。"""
+        if not _contains_chinese(query):
+            return query, False
+
+        # 【修改点】：强制要求用英文逗号分隔不同的核心概念
+        system_prompt = (
+            "你是一个学术检索专家。你的任务是将用户的中文查询转换为 ArXiv 数据库所需的英文检索词组。\n"
+            "严格遵守以下规则：\n"
+            "1. 提取核心研究实体和方法论名词。\n"
+            "2. 剔除所有无意义的连接词（如 based on, using, a study of）。\n"
+            "3. 不同的核心概念之间必须用【英文逗号】分隔。\n"
+            "4. 绝对不要输出任何解释文字或换行。\n"
+            "示例：输入'基于卷积神经网络的图像分类问题' -> 输出'Convolutional Neural Network, Image Classification'"
+        )
+
+        try:
+            resp = self.llm.chat([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"需要翻译的查询：{query}"}
+            ])
+            en_query = resp.strip(' "\'\n。，.,')
+            if en_query:
+                return en_query, True
+            return query, False
+        except Exception as e:
+            if self.logger:
+                self.logger.warning("ArXivTool", f"LLM 翻译失败: {e}")
+            return query, False
 
     def search(self, query: str, max_results: Optional[int] = None,
                categories: Optional[list[str]] = None) -> list[Paper]:
         """
-        搜索 ArXiv 论文（自动将中文查询翻译为英文）
-        Args:
-            query: 搜索关键词，支持中文或英文
-            max_results: 最大返回数量
-            categories: 限定分类，如 ["cs.AI", "cs.LG"]
-        Returns:
-            论文列表，按相关性排序
+        搜索 ArXiv 论文
         """
         n = max_results or self.max_results
 
-        # 中文 → 英文转换（ArXiv API 仅支持英文检索）
-        en_query, translated = _translate_query(query)
+        # 动态调用 LLM 进行翻译
+        en_query, translated = self._translate_query_with_llm(query)
         if translated and self.logger:
-            self.logger.info("ArXivTool", f"中文查询已转换为英文: 「{query}」→「{en_query}」")
+            self.logger.info("ArXivTool", f"LLM 智能翻译: 「{query}」→「{en_query}」")
 
         search_q = self._build_query(en_query, categories)
 
@@ -219,7 +124,7 @@ class ArXivSearchTool:
         url = f"{self.BASE_URL}?{params}"
 
         if self.logger:
-            self.logger.info("ArXivTool", f"检索: {en_query[:60]}")
+            self.logger.info("ArXivTool", f"检索 URL 生成完毕，执行请求...")
 
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "MindPilot/1.0"})
@@ -230,17 +135,29 @@ class ArXivSearchTool:
                 self.logger.warning("ArXivTool", f"网络请求失败，返回 Mock 数据: {e}")
             return self._mock_papers(query, n)
 
-        papers = self._parse_xml(xml_data, query)
+        papers = self._parse_xml(xml_data, en_query)
         if self.logger:
             self.logger.success("ArXivTool", f"找到 {len(papers)} 篇论文")
         return papers
 
     def _build_query(self, query: str, categories: Optional[list[str]]) -> str:
-        q = f"all:{urllib.parse.quote(query)}"
+        """
+        将逗号分隔的查询词转换为 ArXiv 标准的 Boolean 查询格式。
+        """
+        terms = [t.strip() for t in query.split(',') if t.strip()]
+        
+        if terms:
+            q_parts = [f'all:"{term}"' for term in terms]
+            q_str = " AND ".join(q_parts)
+        else:
+            q_str = 'all:"deep learning"'
+            
         if categories:
             cat_q = " OR ".join(f"cat:{c}" for c in categories)
-            q = f"({q}) AND ({cat_q})"
-        return q
+            q_str = f"({q_str}) AND ({cat_q})"
+            
+        # 【修改点】：直接返回原字符串，千万不要在这里做 urllib.parse.quote!
+        return q_str
 
     def _parse_xml(self, xml_data: str, query: str) -> list[Paper]:
         root = ET.fromstring(xml_data)
