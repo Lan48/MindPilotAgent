@@ -25,7 +25,7 @@ from typing import Optional, Callable
 
 from config import CONFIG
 from framework.logger import MindPilotLogger
-from framework.communication import MessageBus, HumanInTheLoop
+from framework.communication import ErrorCode, MessageBus, HumanInTheLoop
 from framework.scheduler import SyncScheduler, Task
 from memory.memory_store import MemoryStore
 from tools.llm_client import LLMClient
@@ -69,6 +69,7 @@ class MindPilotOrchestrator:
             verbose=self.config.verbose,
         )
         self.bus = MessageBus()
+        self._register_message_endpoints()
         # 改进④：HumanInTheLoop 由配置驱动（字段定义在 config.py MindPilotConfig 中）
         self.human_loop = HumanInTheLoop(
             enabled=self.config.human_in_the_loop
@@ -153,7 +154,9 @@ class MindPilotOrchestrator:
         plan = None
 
         def _do_planning():
+            self._send_request("PlanningAgent", "planning", {"query": query})
             p = self.planner.run(query)
+            self._send_response("PlanningAgent", "planning", {"plan_id": plan.plan_id, "tasks": len(plan.tasks)})
             self.planner.print_plan(p)
             return p
 
@@ -248,7 +251,7 @@ class MindPilotOrchestrator:
         }
         exp_design = self._run_step(
             "experiment",
-            lambda: self.eval_agent.design_experiment(query, lit_result),
+            lambda: self.eval_agent.design_experiment(query, lit_result, research_path=plan.selected_path),
             exp_fallback,
         )
 
@@ -385,9 +388,55 @@ class MindPilotOrchestrator:
             "report_files": eval_result.get("report_files", {}),
             "total_time_s": total_time,
             "session_log":  str(self.logger.log_file),
+            "message_bus":  bus_stats,
         }
         self._print_final_summary(final_result, total_time)
         return final_result
+
+    def _register_message_endpoints(self):
+        for agent in [
+            "Orchestrator",
+            "PlanningAgent",
+            "LiteratureAgent",
+            "CodeAgent",
+            "AnalysisAgent",
+            "EvaluationAgent",
+        ]:
+            self.bus.register(agent)
+
+    def _send_request(self, receiver: str, task_id: str, payload: dict):
+        msg = self.bus.request(
+            sender="Orchestrator",
+            receiver=receiver,
+            task_id=task_id,
+            payload=payload,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
+
+    def _send_response(self, sender: str, task_id: str, payload: dict):
+        msg = self.bus.response(
+            sender=sender,
+            receiver="Orchestrator",
+            task_id=task_id,
+            payload=payload,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
+
+    def _send_error(self, sender: str, task_id: str, error: Exception):
+        msg = self.bus.error(
+            sender=sender,
+            receiver="Orchestrator",
+            task_id=task_id,
+            detail=str(error),
+            code=ErrorCode.EXECUTION_ERROR,
+            session_id=self.session_id,
+        )
+        self.logger.log_message(msg)
+        return msg
 
     def _print_exp_design(self, exp: dict):
         print(f"\n{'='*60}")

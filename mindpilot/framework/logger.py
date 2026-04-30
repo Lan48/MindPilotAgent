@@ -168,6 +168,20 @@ class MindPilotLogger:
     def debug(self, agent: str, message: str, data: Any = None):
         self.log("DEBUG", agent, message, data)
 
+    def log_message(self, msg: Any):
+        """记录符合通信协议的消息，便于把 Agent 调用和消息流对应起来。"""
+        data = msg.to_dict() if hasattr(msg, "to_dict") else msg
+        msg_type = data.get("msg_type", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
+        sender = data.get("sender", "") if isinstance(data, dict) else ""
+        receiver = data.get("receiver", "") if isinstance(data, dict) else ""
+        task_id = data.get("task_id", "") if isinstance(data, dict) else ""
+        self.log(
+            "DEBUG",
+            "Framework",
+            f"消息流 {msg_type}: {sender} -> {receiver} task={task_id}",
+            data,
+        )
+
     def start_call(self, agent_name: str, task_id: str, input_data: Any) -> AgentCall:
         call = AgentCall(agent_name=agent_name, task_id=task_id, input_data=input_data)
         self._current_calls[call.call_id] = call
@@ -187,7 +201,7 @@ class MindPilotLogger:
         self.error(call.agent_name, f"失败 task={call.task_id}: {error}")
         self._write_jsonl({"event": "call_failed", **call.to_dict()})
 
-    def save_summary(self):
+    def save_summary(self, extra: Optional[dict] = None):
         """保存会话总结"""
         total = len(self.call_history)
         success = sum(1 for c in self.call_history if c.status == "success")
@@ -203,6 +217,8 @@ class MindPilotLogger:
             "avg_duration_ms": avg_dur,
             "calls": [c.to_dict() for c in self.call_history],
         }
+        if extra:
+            summary.update(extra)
         with open(self.summary_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
         self.info("Framework", f"会话日志已保存: {self.summary_file}")
