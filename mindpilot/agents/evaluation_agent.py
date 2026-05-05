@@ -213,7 +213,7 @@ class EvaluationAgent:
 
             system = """你是资深科研实验设计专家。请为以下研究问题设计一个完整、严谨的实验方案。
 
-实验设计方案必须包含以下所有部分，每部分详细描述（每部分不少于100字）：
+实验设计方案必须包含以下所有部分，每部分用清晰、可直接放入报告的中文描述：
 1. 研究目标与假设（明确的研究假设、预期结论）
 2. 实验环境与数据集（数据来源、规模、预处理方法）
 3. 基线方法与对照组设置（至少3个对照方法）
@@ -223,7 +223,7 @@ class EvaluationAgent:
 7. 统计检验与可复现性设置
 8. 预期结果与分析方向
 
-请以 JSON 格式返回，字段：
+请只返回一个 JSON 对象，不要使用 ```json 代码块，不要在 JSON 前后添加解释文字。字段：
 {
   "research_hypothesis": "研究假设...",
   "objectives": ["目标1...", "目标2..."],
@@ -235,15 +235,15 @@ class EvaluationAgent:
   "procedure": ["步骤1...", "步骤2...", ...],
   "reproducibility": "随机种子、重复次数、硬件/软件环境、统计检验方法...",
   "expected_results": "预期结果分析...",
-  "full_description": "完整实验设计描述（500字以上）",
+  "full_description": "完整实验设计总述（250-400字）",
   "sections": [
-    {"heading": "3.1 根据研究主题自行命名的小标题", "body": "对应小节正文..."},
-    {"heading": "3.2 根据研究主题自行命名的小标题", "body": "对应小节正文..."}
+    {"heading": "3.1 根据研究主题自行命名的小标题", "body": "对应小节正文，120-200字"},
+    {"heading": "3.2 根据研究主题自行命名的小标题", "body": "对应小节正文，120-200字"}
   ]
 }
 
 sections 要求：
-- 生成 5~7 个二级小节，heading 必须带 3.x 编号。
+- 生成 5~6 个二级小节，heading 必须带 3.x 编号。
 - heading 应根据研究问题、推荐研究路径和文献方法自行命名，不要机械套用固定模板。
 - sections 整体必须覆盖：研究假设/目标、数据集/环境、基线/对照、评估指标、变量控制/消融、实验流程/可复现性、预期分析。
 - body 应直接写成可放入学术报告的正文，不要只写提纲。"""
@@ -258,13 +258,15 @@ sections 要求：
             resp = self.llm.chat([
                 {"role": "system", "content": system},
                 {"role": "user",   "content": prompt}
-            ])
+            ], max_tokens=4096)
 
-            try:
-                m    = re.search(r"\{[\s\S]+\}", resp)
-                data = json.loads(m.group(0) if m else resp)
-            except Exception:
-                data = {"full_description": resp}
+            data = self._parse_json_object(resp)
+            if not data:
+                self.logger.info(
+                    self.AGENT_NAME,
+                    "实验设计 JSON 解析失败，使用结构化兜底方案，避免原始 JSON 进入报告"
+                )
+                data = self._fallback_experiment_design(query, research_path)
 
             result = {
                 "research_path":       research_path,
@@ -278,7 +280,7 @@ sections 要求：
                 "procedure":           data.get("procedure", []),
                 "reproducibility":     data.get("reproducibility", ""),
                 "expected_results":    data.get("expected_results", ""),
-                "full_description":    data.get("full_description", resp),
+                "full_description":    data.get("full_description", ""),
                 "sections":            self._normalize_experiment_sections(data.get("sections", [])),
             }
             result["structured_summary"] = self._format_experiment_design(result)
@@ -422,6 +424,8 @@ sections 要求：
         # 3. 实验设计
         self.logger.info(self.AGENT_NAME, "整合实验设计内容...")
         exp_desc = exp_design.get("full_description", "")
+        if self._looks_like_raw_json(exp_desc):
+            exp_desc = ""
         if not exp_desc or len(exp_desc) < 100:
             exp_desc = self._expand_section(
                 f"为研究问题「{query}」撰写完整实验设计（500字以上）：\n"
@@ -502,6 +506,56 @@ sections 要求：
         ], max_tokens=2048)
         return resp if resp else f"（内容生成中，请参考问题：{prompt[:100]}）"
 
+    def _parse_json_object(self, text: str) -> dict:
+        """解析模型返回的 JSON；兼容 ```json 代码块和前后说明文字。"""
+        if not text:
+            return {}
+
+        cleaned = text.strip()
+        fence_match = re.fullmatch(r"```(?:json|JSON)?\s*([\s\S]*?)\s*```", cleaned)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+
+        for candidate in (cleaned, self._extract_balanced_json(cleaned)):
+            if not candidate:
+                continue
+            try:
+                data = json.loads(candidate)
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                continue
+        return {}
+
+    def _extract_balanced_json(self, text: str) -> str:
+        """从混杂文本中截取第一个完整 JSON 对象；截断时返回空串。"""
+        start = text.find("{")
+        if start < 0:
+            return ""
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return ""
+
     def _normalize_experiment_sections(self, sections: Any) -> list[dict]:
         """清洗模型返回的实验设计小节，报告生成只消费 heading/body。"""
         if not isinstance(sections, list):
@@ -515,10 +569,129 @@ sections 要求：
             body = str(sec.get("body", "")).strip()
             if not heading or not body:
                 continue
+            if self._looks_like_raw_json(body):
+                continue
             if not heading.startswith("3."):
                 heading = f"3.{idx} {heading}"
             normalized.append({"heading": heading, "body": body})
         return normalized
+
+    def _fallback_experiment_design(self, query: str, research_path: str = "") -> dict:
+        """当模型返回截断或非法 JSON 时，提供干净的结构化实验设计。"""
+        path_text = f"该方案参考推荐研究路径「{research_path}」，" if research_path else ""
+        return {
+            "research_hypothesis": (
+                f"{query} 相关方法可以通过更清晰的实验控制、基线对照和多维评价指标获得"
+                "更可靠的效果验证。"
+            ),
+            "objectives": [
+                "明确研究问题对应的核心实验假设与验证目标",
+                "构建统一的数据处理、模型训练和评估流程",
+                "通过基线对照、消融实验和统计检验分析方法有效性",
+            ],
+            "dataset": (
+                "实验数据应选择与研究问题直接相关的公开数据集或课程允许的数据样本，"
+                "并统一完成数据清洗、格式转换、训练集/验证集/测试集划分和异常样本过滤。"
+            ),
+            "baselines": [
+                "基础模型或传统方法：作为最低性能参考",
+                "主流深度学习方法：用于体现当前常用技术路线的表现",
+                "改进前模型：用于直接衡量本研究方法带来的增益",
+            ],
+            "metrics": [
+                "Accuracy 或任务成功率：衡量主要任务表现",
+                "Precision、Recall 或 F1：衡量预测结果的稳定性与均衡性",
+                "Latency 与资源占用：衡量方法在实际部署中的效率成本",
+            ],
+            "variables": {
+                "independent": ["模型结构", "关键模块开关", "训练配置"],
+                "dependent": ["任务性能指标", "效率指标", "稳定性指标"],
+                "controlled": ["数据划分", "随机种子", "训练轮数", "评价协议"],
+            },
+            "ablations": [
+                "移除核心模块，观察性能变化",
+                "调整关键超参数，分析模型敏感性",
+                "固定其他条件，仅改变单一变量验证因果关系",
+            ],
+            "procedure": [
+                "完成数据预处理和实验环境配置",
+                "训练并评估各个基线方法",
+                "训练并评估改进方法",
+                "开展消融实验和重复实验",
+                "汇总结果并进行统计检验与误差分析",
+            ],
+            "reproducibility": (
+                "固定随机种子，记录 Python、PyTorch、依赖库版本和硬件环境；"
+                "每组实验至少重复三次，并报告均值、标准差和显著性检验结果。"
+            ),
+            "expected_results": (
+                "预期改进方法在主要性能指标上优于基线，同时在计算开销上保持可接受水平；"
+                "消融实验应能说明关键模块对最终性能的贡献。"
+            ),
+            "full_description": (
+                f"本实验围绕「{query}」展开，{path_text}通过统一数据集、基线方法、"
+                "评价指标和可复现实验流程，对研究假设进行系统验证。实验设计强调控制变量，"
+                "在相同训练配置和评价协议下比较不同方法的性能差异，并结合消融实验分析关键模块"
+                "的实际贡献。最终报告将从效果、效率、稳定性和可复现性四个角度解释实验结果。"
+            ),
+            "sections": [
+                {
+                    "heading": "3.1 研究假设与验证目标",
+                    "body": (
+                        f"本节围绕「{query}」明确实验假设与验证目标。实验重点不是单纯展示模型输出，"
+                        "而是通过可比较、可复现的流程判断方法是否真正带来性能增益，并分析这种增益"
+                        "是否来自核心设计而非数据划分或训练随机性。"
+                    ),
+                },
+                {
+                    "heading": "3.2 数据集构建与预处理流程",
+                    "body": (
+                        "数据集部分需要说明数据来源、样本规模、清洗规则和划分方式。所有方法应使用"
+                        "相同训练集、验证集和测试集，并统一输入格式、缺失值处理和异常样本过滤规则，"
+                        "从而保证后续结果具有可比性。"
+                    ),
+                },
+                {
+                    "heading": "3.3 基线方法与对照组设置",
+                    "body": (
+                        "对照组应包含基础方法、主流方法和改进前模型三个层次。基础方法提供性能下限，"
+                        "主流方法代表已有研究水平，改进前模型用于直接衡量本研究新增模块或策略的贡献。"
+                    ),
+                },
+                {
+                    "heading": "3.4 评估指标与变量控制",
+                    "body": (
+                        "评价指标应同时覆盖任务效果和运行效率，例如准确率、F1、延迟和资源占用。"
+                        "实验中需要明确自变量、因变量和控制变量，并固定随机种子、训练轮数、优化器和"
+                        "数据划分，以减少无关因素对结论的影响。"
+                    ),
+                },
+                {
+                    "heading": "3.5 消融实验与可复现性设置",
+                    "body": (
+                        "消融实验通过逐项移除或替换关键模块，分析各组成部分对最终性能的贡献。"
+                        "为保证可复现性，每组实验至少重复三次，并记录硬件环境、软件版本、超参数配置"
+                        "和统计检验结果。"
+                    ),
+                },
+                {
+                    "heading": "3.6 预期结果与分析方向",
+                    "body": (
+                        "预期结果部分需要解释方法在主要指标上的改进幅度，并结合误差样本和失败案例分析"
+                        "方法边界。如果改进方法在效果和效率之间存在权衡，也应在结果分析中给出具体讨论。"
+                    ),
+                },
+            ],
+        }
+
+    def _looks_like_raw_json(self, text: str) -> bool:
+        stripped = text.strip()
+        return (
+            stripped.startswith("```json")
+            or stripped.startswith("{")
+            or '"research_hypothesis"' in stripped
+            or '"sections"' in stripped
+        )
 
     def _format_experiment_part(self, items: Any, fallback: str = "") -> str:
         """把实验设计字段稳定格式化，避免报告中出现一整段散文。"""
@@ -561,7 +734,7 @@ sections 要求：
         """生成第 3 章开头的结构化总述。"""
         pieces = []
         overview = exp_design.get("full_description", "")
-        if overview:
+        if overview and not self._looks_like_raw_json(overview):
             pieces.append(overview.strip())
 
         hypothesis = exp_design.get("research_hypothesis", "")
