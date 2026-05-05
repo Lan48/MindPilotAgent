@@ -16,6 +16,28 @@ from framework.logger import MindPilotLogger
 from config import CONFIG
 
 
+# ── 改进⑥：Demo 用进度回调 ──────────────────────────────────
+_STEP_LABELS = {
+    "planning": "Planning", "literature": "Literature",
+    "experiment": "Experiment", "code": "Code",
+    "analysis": "Analysis", "evaluation": "Evaluation",
+}
+
+
+def _demo_step_callback(step_name: str, result: dict):
+    """Demo 专用的进度回调：简洁打印每步完成状态"""
+    label = _STEP_LABELS.get(step_name, step_name)
+    step_order = list(_STEP_LABELS.keys())
+    idx = step_order.index(step_name) + 1 if step_name in step_order else 0
+    total = len(_STEP_LABELS)
+
+    is_degraded = isinstance(result, dict) and (
+        result.get("_fallback") or result.get("_timeout") or result.get("_error")
+    )
+    mark = "[DEGRADED]" if is_degraded else "[OK]"
+    print(f"  [{idx}/{total}] {label} {mark}")
+
+
 def demo_full_pipeline():
     """Demo 1: 完整科研助手流程"""
     print("\n" + "🟦"*30)
@@ -24,7 +46,8 @@ def demo_full_pipeline():
 
     query = "研究 Transformer 注意力机制的计算复杂度，并用 Python 实现一个简单的缩放点积注意力"
 
-    orchestrator = MindPilotOrchestrator()
+    # 传入进度回调
+    orchestrator = MindPilotOrchestrator(on_step_done=_demo_step_callback)
     result = orchestrator.run(query)
 
     print(f"\n📋 Demo 1 结果摘要：")

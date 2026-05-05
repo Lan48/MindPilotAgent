@@ -291,32 +291,226 @@ def with_retry(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0):
 class HumanInTheLoop:
     """
     Human-in-the-Loop 机制
-    关键决策节点暂停等待用户确认
+    在关键决策节点暂停流程，展示中间结果，等待用户确认、选择或修改。
+
+    审核点：
+      1. 规划完成后：展示 ToT 路径和任务列表，允许用户选择路径或跳过任务
+      2. 实验设计完成后：展示假设/基线/指标，允许用户修改
+      3. 代码执行完成后：展示代码和输出，允许用户决定是否继续
     """
 
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
-        self.auto_approve_keywords = ["data analysis", "literature search", "visualization"]
+        self.decisions: list[dict] = []   # 记录所有人工决策，供日志追溯
 
+    def _record(self, checkpoint: str, action: str, detail: str = ""):
+        self.decisions.append({
+            "checkpoint": checkpoint, "action": action, "detail": detail
+        })
+
+    # ── 通用确认（y/n）────────────────────────────────────────
     def request_approval(self, task: str, context: str, agent: str) -> bool:
-        """
-        请求用户批准。
-        - 在交互模式下向用户提问
-        - 在批处理模式下自动批准低风险任务
-        """
         if not self.enabled:
             return True
+        print(f"\n{'='*58}")
+        print(f"  [Human Review] {agent}")
+        print(f"{'='*58}")
+        print(f"  Task: {task}")
+        if context:
+            print(f"  Context: {context[:300]}")
+        print(f"{'='*58}")
+        answer = input("  Approve? [Y/n] ").strip().lower()
+        approved = answer in ("", "y", "yes")
+        self._record(agent, "approved" if approved else "rejected", task)
+        return approved
 
-        # 低风险任务自动批准
-        task_lower = task.lower()
-        if any(kw in task_lower for kw in self.auto_approve_keywords):
-            return True
+    # ── 审核点 1：规划方案审核 ────────────────────────────────
+    def review_plan(self, plan) -> dict:
+        """
+        展示规划结果，允许用户：
+          - 选择不同的研究路径（输入路径编号）
+          - 跳过某些任务（输入要跳过的任务 ID）
+          - 直接确认（回车）
+        返回: {"action": "approve"|"select_path"|"skip_tasks", ...}
+        """
+        if not self.enabled:
+            return {"action": "approve"}
 
-        print(f"\n{'━'*55}")
-        print(f"  🤚 人机协同确认  [Agent: {agent}]")
-        print(f"{'━'*55}")
-        print(f"  任务: {task}")
-        print(f"  上下文: {context[:200]}...")
-        print(f"{'━'*55}")
-        answer = input("  是否批准执行？[y/N] ").strip().lower()
-        return answer in ("y", "yes", "是")
+        print(f"\n{'='*58}")
+        print(f"  [Human Review] Research Plan")
+        print(f"{'='*58}")
+        print(f"  Query: {plan.query[:60]}")
+
+        # 展示所有路径及评分
+        if plan.all_paths:
+            print(f"\n  Available research paths:")
+            for i, p in enumerate(plan.all_paths):
+                selected = " <-- current" if p.get("description") == plan.selected_path else ""
+                print(f"    [{i+1}] score={p.get('score', '?'):.2f}  "
+                      f"{p.get('description', '')[:50]}{selected}")
+
+        # 展示任务列表
+        print(f"\n  Task list:")
+        for t in plan.tasks:
+            deps = f" (depends: {', '.join(t.depends_on)})" if t.depends_on else ""
+            print(f"    [{t.task_id}] {t.name:18s} -> {t.agent}{deps}")
+
+        print(f"\n{'='*58}")
+        print(f"  Options:")
+        print(f"    [Enter]     Approve current plan")
+        print(f"    [1-{len(plan.all_paths)}]       Select a different path (re-plan)")
+        print(f"    [skip T2,T4] Skip specific tasks")
+        print(f"    [abort]     Abort entire run")
+        print(f"{'='*58}")
+
+        answer = input("  Your choice: ").strip()
+
+        if not answer:
+            self._record("plan_review", "approve")
+            return {"action": "approve"}
+
+        if answer.lower() == "abort":
+            self._record("plan_review", "abort")
+            return {"action": "abort"}
+
+        # 选择路径
+        if answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(plan.all_paths):
+                chosen = plan.all_paths[idx]
+                self._record("plan_review", "select_path",
+                             chosen.get("description", ""))
+                return {"action": "select_path", "path_index": idx,
+                        "path": chosen.get("description", "")}
+
+        # 跳过任务
+        if answer.lower().startswith("skip"):
+            parts = answer.replace("skip", "").strip().split(",")
+            skip_ids = [p.strip().upper() for p in parts if p.strip()]
+            self._record("plan_review", "skip_tasks", str(skip_ids))
+            return {"action": "skip_tasks", "skip_ids": skip_ids}
+
+        self._record("plan_review", "approve", "unrecognized input, auto-approve")
+        return {"action": "approve"}
+
+    # ── 审核点 2：实验设计审核 ────────────────────────────────
+    def review_experiment(self, query: str, exp_design: dict) -> dict:
+        """
+        展示实验设计，允许用户：
+          - 直接确认（回车）
+          - 修改假设（输入新假设）
+          - 添加/替换基线或指标
+        返回: {"action": "approve"|"modify", "modifications": {...}}
+        """
+        if not self.enabled:
+            return {"action": "approve"}
+
+        print(f"\n{'='*58}")
+        print(f"  [Human Review] Experiment Design")
+        print(f"{'='*58}")
+        hyp = exp_design.get("research_hypothesis", "N/A")
+        print(f"  Hypothesis: {hyp[:80]}")
+        baselines = exp_design.get("baselines", [])
+        print(f"  Baselines:  {', '.join(str(b)[:30] for b in baselines[:5])}")
+        metrics = exp_design.get("metrics", [])
+        print(f"  Metrics:    {', '.join(str(m)[:25] for m in metrics[:5])}")
+        desc = exp_design.get("full_description", "")
+        if desc:
+            print(f"  Description: {desc[:120]}...")
+
+        print(f"\n{'='*58}")
+        print(f"  Options:")
+        print(f"    [Enter]          Approve")
+        print(f"    [h: <text>]      Change hypothesis")
+        print(f"    [b: A, B, C]     Replace baselines")
+        print(f"    [m: X, Y]        Replace metrics")
+        print(f"    [abort]          Abort entire run")
+        print(f"{'='*58}")
+
+        answer = input("  Your choice: ").strip()
+
+        if not answer:
+            self._record("experiment_review", "approve")
+            return {"action": "approve"}
+
+        if answer.lower() == "abort":
+            self._record("experiment_review", "abort")
+            return {"action": "abort"}
+
+        modifications = {}
+        if answer.lower().startswith("h:"):
+            modifications["research_hypothesis"] = answer[2:].strip()
+        elif answer.lower().startswith("b:"):
+            modifications["baselines"] = [
+                b.strip() for b in answer[2:].split(",") if b.strip()
+            ]
+        elif answer.lower().startswith("m:"):
+            modifications["metrics"] = [
+                m.strip() for m in answer[2:].split(",") if m.strip()
+            ]
+
+        if modifications:
+            self._record("experiment_review", "modify", str(modifications))
+            return {"action": "modify", "modifications": modifications}
+
+        self._record("experiment_review", "approve", "unrecognized input")
+        return {"action": "approve"}
+
+    # ── 审核点 3：代码执行结果审核 ────────────────────────────
+    def review_code(self, code_result: dict) -> dict:
+        """
+        展示代码执行结果，允许用户：
+          - 确认继续（回车）
+          - 要求重新生成代码（retry）
+          - 跳过后续分析（skip）
+        返回: {"action": "approve"|"retry"|"skip"|"abort"}
+        """
+        if not self.enabled:
+            return {"action": "approve"}
+
+        success = code_result.get("success", False)
+        code = code_result.get("final_code", "")
+        stdout = code_result.get("stdout", "")
+        rounds = code_result.get("total_rounds", 0)
+
+        print(f"\n{'='*58}")
+        print(f"  [Human Review] Code Execution Result")
+        print(f"{'='*58}")
+        print(f"  Status: {'SUCCESS' if success else 'FAILED'}")
+        print(f"  Debug rounds: {rounds}")
+        if code:
+            # 显示代码前 15 行
+            lines = code.strip().split("\n")
+            print(f"  Code ({len(lines)} lines):")
+            for line in lines[:15]:
+                print(f"    {line}")
+            if len(lines) > 15:
+                print(f"    ... ({len(lines)-15} more lines)")
+        if stdout:
+            print(f"  Output: {stdout[:200]}")
+
+        print(f"\n{'='*58}")
+        print(f"  Options:")
+        print(f"    [Enter]   Approve, continue to analysis")
+        print(f"    [retry]   Regenerate code")
+        print(f"    [skip]    Skip analysis, go to report")
+        print(f"    [abort]   Abort entire run")
+        print(f"{'='*58}")
+
+        answer = input("  Your choice: ").strip().lower()
+
+        if not answer:
+            self._record("code_review", "approve")
+            return {"action": "approve"}
+        if answer == "retry":
+            self._record("code_review", "retry")
+            return {"action": "retry"}
+        if answer == "skip":
+            self._record("code_review", "skip")
+            return {"action": "skip"}
+        if answer == "abort":
+            self._record("code_review", "abort")
+            return {"action": "abort"}
+
+        self._record("code_review", "approve", "unrecognized input")
+        return {"action": "approve"}
