@@ -41,17 +41,18 @@ class CodeAgent:
         # debug
         self.debug_mode = os.getenv("MP_DEBUG", "0") == "1"
 
-    def run(self, task_description: str) -> dict:
+    def run(self, task_description: str, context: dict = None) -> dict:
         """
         主入口：生成并执行代码，自动调试
         """
         call = self.logger.start_call(self.AGENT_NAME, "code_generation", task_description)
         session = CodeSession(task_id=call.call_id, requirement=task_description)
+        context = context or {}
 
         try:
             # Step 1: 初始代码生成（只基于任务描述）
             self.logger.info(self.AGENT_NAME, "生成初始代码...")
-            code = self._generate_code(task_description)
+            code = self._generate_code(task_description, context)
 
             quick_issues = self._quick_validate_code(code)
             if quick_issues:
@@ -159,27 +160,73 @@ class CodeAgent:
             self.logger.fail_call(call, str(e))
             raise
 
-    def _generate_code(self, requirement: str) -> str:
-        """初始代码生成（只基于任务描述）"""
-        system = ( 
-                "你是资深 Python 科研工程师。请根据需求生成高质量、可直接运行的 Python 代码。\n"
-                "要求：\n"
-                "1. 添加中文注释。\n"
-                "2. 包含完整的错误处理。\n"
-                "3. 代码必须是轻量级可运行示例，不要下载外部模型、数据集或权重文件。\n"
-                "4. 不要依赖本地不存在的数据路径。\n"
-                "5. 如果任务涉及 YOLO、Transformer、CLIP 等大型模型，请用合成数据或简化模型模拟核心优化思想。\n"
-                "6. 最后必须 print 可供后续分析的关键数值结果，例如 loss、accuracy、latency、model_size、speedup 等。\n"
-                "7. 建议按如下格式打印：\n"
-                "print('ANALYSIS_RESULT_START')\n"
-                "print('accuracy=0.91')\n"
-                "print('loss=0.12')\n"
-                "print('latency_ms=12.5')\n"
-                "print('ANALYSIS_RESULT_END')\n"
-                "8. 只输出纯 Python 代码，不要 markdown，不要解释。"
-            
+    def _generate_code(self, requirement: str, context: dict = None) -> str:
+        """初始代码生成（基于任务描述 + 简要上下文）"""
+        context = context or {}
+
+        context_parts = []
+
+        # 1. 文献方法摘要，只取少量，避免 prompt 太长
+        top_papers = context.get("top_papers", [])
+        if top_papers:
+            methods = []
+            for p in top_papers[:2]:
+                summary = p.get("structured_summary", {}) if isinstance(p, dict) else {}
+                method = summary.get("method", "")
+                if method:
+                    methods.append(method[:300])
+            if methods:
+                context_parts.append("参考文献方法摘要：\n" + "\n".join(f"- {m}" for m in methods))
+
+        # 2. 实验设计摘要
+        exp_design = context.get("exp_design", {})
+        if isinstance(exp_design, dict) and exp_design:
+            hypothesis = exp_design.get("research_hypothesis", "")
+            full_desc = exp_design.get("full_description", "")
+            if hypothesis:
+                context_parts.append(f"实验假设：{hypothesis[:300]}")
+            if full_desc:
+                context_parts.append(f"实验设计说明：{full_desc[:500]}")
+
+        # 3. baseline 和 metrics
+        baselines = context.get("baselines", [])
+        if baselines:
+            context_parts.append(
+                "实验对照/基线：\n" + "\n".join(f"- {str(b)[:150]}" for b in baselines[:3])
+            )
+
+        metrics = context.get("metrics", [])
+        if metrics:
+            context_parts.append(
+                "评价指标：\n" + "\n".join(f"- {str(m)[:120]}" for m in metrics[:5])
+            )
+
+        context_text = "\n\n".join(context_parts)
+
+        system = (
+            "你是资深 Python 科研工程师。请根据任务描述和给定上下文生成高质量、可直接运行的 Python 代码。\n"
+            "要求：\n"
+            "1. 任务描述是主要依据，上下文只作为参考，不要输出文献综述或解释文字。\n"
+            "2. 添加中文注释。\n"
+            "3. 包含完整的错误处理。\n"
+            "4. 代码必须是轻量级可运行示例，不要下载外部模型、数据集或权重文件。\n"
+            "5. 不要依赖本地不存在的数据路径。\n"
+            "6. 如果任务涉及 YOLO、Transformer、CLIP 等大型模型，请用合成数据或简化模型模拟核心优化思想。\n"
+            "7. 最后必须 print 可供后续分析的关键数值结果，例如 loss、accuracy、latency、model_size、speedup 等。\n"
+            "8. 建议按如下格式打印：\n"
+            "print('ANALYSIS_RESULT_START')\n"
+            "print('accuracy=0.91')\n"
+            "print('loss=0.12')\n"
+            "print('latency_ms=12.5')\n"
+            "print('ANALYSIS_RESULT_END')\n"
+            "9. 只输出纯 Python 代码，不要 markdown，不要解释。"
         )
-        prompt = f"需求：{requirement}"
+
+        if context_text:
+            prompt = f"任务描述：{requirement}\n\n参考上下文：\n{context_text}"
+        else:
+            prompt = f"任务描述：{requirement}"
+
         resp = self.llm.chat_code([
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}

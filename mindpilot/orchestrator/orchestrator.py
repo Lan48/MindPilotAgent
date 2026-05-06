@@ -287,7 +287,7 @@ class MindPilotOrchestrator:
         }
         code_result = self._run_step(
             "code",
-            lambda: self.code_agent.run(code_desc),
+            lambda: self.code_agent.run(code_desc, context=context),
             code_fallback,
         )
 
@@ -302,7 +302,7 @@ class MindPilotOrchestrator:
                 self.logger.info("Orchestrator", "User requested code retry")
                 code_result = self._run_step(
                     "code",
-                    lambda: self.code_agent.run(code_desc),
+                    lambda: self.code_agent.run(code_desc, context=context),
                     code_fallback,
                 )
             if review["action"] == "skip":
