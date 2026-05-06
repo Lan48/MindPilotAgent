@@ -40,6 +40,12 @@ Thumbs.db
 *.sqlite3
 *.db
 
+# MindPilot runtime generated datasets
+mindpilot/dataset/
+mindpilot/logs/
+mindpilot/outputs/
+mindpilot/memory/store/
+
 # Model / data artifacts (optional)
 *.pth
 *.pt
