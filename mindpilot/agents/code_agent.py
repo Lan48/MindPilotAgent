@@ -5,9 +5,13 @@
 AST 静态安全检测 + 受限沙箱执行。
 """
 
+import csv
 import json
+import os
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 
@@ -38,6 +42,8 @@ class CodeAgent:
         self.memory = memory_store
         self.logger = logger
         self.max_rounds = config.code.max_debug_rounds
+        self.dataset_dir = Path(__file__).resolve().parent.parent / "dataset"
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self, task_description: str, context: dict = None) -> dict:
         """
@@ -55,11 +61,16 @@ class CodeAgent:
                 self.logger.info(self.AGENT_NAME, f"记忆检索：{len(similar)} 条相似代码记录")
                 context_hint = f"\n参考历史：{similar[0].content[:200]}"
 
-            # Step 2: 初始代码生成
-            self.logger.info(self.AGENT_NAME, "生成初始代码...")
-            code = self._generate_code(task_description, context_hint, context)
+            # Step 2: 先生成实验相关数据集，并把路径带给后续代码生成
+            self.logger.info(self.AGENT_NAME, "生成实验数据集...")
+            dataset_info = self._prepare_dataset(task_description, context_hint, context, session.task_id)
+            self.logger.info(self.AGENT_NAME, f"数据集已保存: {dataset_info['csv_path']}")
 
-            # Step 3: 执行 + 自动调试循环
+            # Step 3: 初始代码生成
+            self.logger.info(self.AGENT_NAME, "生成初始代码...")
+            code = self._generate_code(task_description, context_hint, context, dataset_info)
+
+            # Step 4: 执行 + 自动调试循环
             for round_num in range(1, self.max_rounds + 1):
                 self.logger.info(self.AGENT_NAME, f"第 {round_num}/{self.max_rounds} 轮执行...")
 
@@ -147,6 +158,9 @@ class CodeAgent:
                 "pass_at_1": session.pass_at_1,
                 "iterations": session.iterations,
                 "test_code": test_code,
+                "dataset_path": dataset_info.get("csv_path", ""),
+                "dataset_json_path": dataset_info.get("json_path", ""),
+                "dataset_rows": dataset_info.get("row_count", 0),
             }
             self.logger.finish_call(call, result)
             self._print_session(session)
@@ -156,7 +170,83 @@ class CodeAgent:
             self.logger.fail_call(call, str(e))
             raise
 
-    def _generate_code(self, requirement: str, context_hint: str, extra_ctx: dict) -> str:
+    def _prepare_dataset(self, requirement: str, context_hint: str, extra_ctx: dict, task_id: str) -> dict:
+        """先生成并落盘与实验相关的数据集。"""
+        task_slug = self._safe_slug(task_id)
+        task_dir = self.dataset_dir / task_slug
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        papers_hint = ""
+        if extra_ctx.get("top_papers"):
+            titles = [
+                p.get("title", "")
+                for p in extra_ctx["top_papers"][:2]
+                if p.get("title")
+            ]
+            if titles:
+                papers_hint = f"\n参考文献主题：{'; '.join(titles)}"
+
+        system = (
+            "你是科研实验数据集生成器。请根据需求生成一个可直接保存为 CSV 和 JSON 的本地数据集。\n"
+            "要求：\n"
+            "1. 只输出严格 JSON，不要 Markdown，不要解释\n"
+            "2. 数据集必须是可本地读取的表格数据，rows 中每一项都应是扁平键值对\n"
+            "3. 至少包含 12 条样本，字段尽量通用，便于后续 Python 代码读取和处理\n"
+            "4. 不要依赖网络或外部下载，数据必须自包含\n"
+            "5. JSON 需要包含 dataset_name、description、columns、rows\n"
+        )
+        prompt = (
+            f"需求：{requirement}{papers_hint}{context_hint}\n\n"
+            f"请生成与上述需求直接相关的数据集，并把后续代码应该读取的数据集文件名设计为适合这个任务的本地文件。"
+        )
+
+        try:
+            resp = self.llm.chat([
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ])
+            dataset_spec = self._parse_dataset_spec(resp)
+        except Exception as exc:
+            self.logger.warning(self.AGENT_NAME, f"数据集生成失败，使用本地回退数据: {exc}")
+            dataset_spec = None
+
+        if not dataset_spec:
+            dataset_spec = self._build_fallback_dataset(requirement)
+
+        dataset_name = self._safe_slug(str(dataset_spec.get("dataset_name") or f"{task_slug}_dataset"))
+        dataset_spec["dataset_name"] = dataset_name
+        dataset_spec["generated_at"] = datetime.now(timezone.utc).isoformat()
+        dataset_spec["requirement"] = requirement
+
+        rows = dataset_spec.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            rows = self._build_fallback_dataset(requirement)["rows"]
+            dataset_spec["rows"] = rows
+
+        json_path = task_dir / f"{dataset_name}.json"
+        csv_path = task_dir / f"{dataset_name}.csv"
+        self._write_dataset_files(dataset_spec, json_path, csv_path)
+
+        columns = dataset_spec.get("columns") or []
+        column_names = [
+            col.get("name", "") if isinstance(col, dict) else str(col)
+            for col in columns
+        ]
+        if not column_names and rows:
+            column_names = list(rows[0].keys())
+
+        return {
+            "dataset_name": dataset_name,
+            "dataset_dir": str(task_dir),
+            "json_path": str(json_path),
+            "csv_path": str(csv_path),
+            "row_count": len(rows),
+            "column_names": column_names,
+            "summary": dataset_spec.get("description", ""),
+            "preview": rows[:3],
+        }
+
+    def _generate_code(self, requirement: str, context_hint: str, extra_ctx: dict, dataset_info: dict) -> str:
         """初始代码生成"""
         papers_hint = ""
         if extra_ctx.get("top_papers"):
@@ -176,9 +266,24 @@ class CodeAgent:
             "3. 包含完整的错误处理\n"
             "4. 最后 print 关键结果\n"
             "5. 使用 matplotlib.use('Agg') 避免 GUI 报错\n"
+            "6. 优先读取本地实验数据集，而不是假设外部输入\n"
             "只输出代码块，不要解释。"
         )
-        prompt = f"需求：{requirement}{papers_hint}{context_hint}"
+        dataset_hint = ""
+        if dataset_info:
+            preview_text = json.dumps(dataset_info.get("preview", []), ensure_ascii=False)
+            dataset_hint = (
+                f"\n实验数据集已预生成：\n"
+                f"- 数据集名称：{dataset_info.get('dataset_name', '')}\n"
+                f"- CSV 路径：{dataset_info.get('csv_path', '')}\n"
+                f"- JSON 路径：{dataset_info.get('json_path', '')}\n"
+                f"- 列名：{', '.join(dataset_info.get('column_names', []))}\n"
+                f"- 样本数：{dataset_info.get('row_count', 0)}\n"
+                f"- 数据摘要：{dataset_info.get('summary', '')}\n"
+                f"- 前三条样例：{preview_text}\n"
+                f"请在代码中直接读取上述 CSV 或 JSON 文件并基于其中数据完成任务。"
+            )
+        prompt = f"需求：{requirement}{papers_hint}{context_hint}{dataset_hint}"
         resp = self.llm.chat_code([
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
@@ -252,6 +357,88 @@ class CodeAgent:
             {"role": "user", "content": f"需求：{requirement}\n\n代码：\n```python\n{code[:800]}\n```"}
         ])
         return self.executor.extract_code(resp)
+
+    def _parse_dataset_spec(self, text: str) -> dict:
+        if not text:
+            return {}
+        cleaned = self.executor.extract_code(text)
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if not match:
+                return {}
+            try:
+                data = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {}
+        if not isinstance(data, dict):
+            return {}
+        rows = data.get("rows") or data.get("records") or []
+        if not isinstance(rows, list):
+            rows = []
+        data["rows"] = rows
+        return data
+
+    def _build_fallback_dataset(self, requirement: str) -> dict:
+        topic = requirement.strip()[:40] or "mindpilot"
+        rows = []
+        for idx in range(1, 13):
+            rows.append({
+                "sample_id": idx,
+                "task_text": f"{topic} - 样本 {idx}",
+                "feature_a": round(idx * 1.25, 3),
+                "feature_b": round((idx % 5) * 2.5 + 0.5, 3),
+                "label": "train" if idx <= 8 else "test",
+                "note": f"用于 {topic} 的本地实验输入",
+            })
+        return {
+            "dataset_name": "mindpilot_fallback_dataset",
+            "description": f"用于任务「{topic}」的本地回退数据集，包含通用实验字段和稳定的读入格式。",
+            "columns": [
+                {"name": "sample_id", "type": "int", "description": "样本编号"},
+                {"name": "task_text", "type": "str", "description": "任务相关文本"},
+                {"name": "feature_a", "type": "float", "description": "连续特征 A"},
+                {"name": "feature_b", "type": "float", "description": "连续特征 B"},
+                {"name": "label", "type": "str", "description": "样本标签"},
+                {"name": "note", "type": "str", "description": "备注"},
+            ],
+            "rows": rows,
+        }
+
+    def _write_dataset_files(self, dataset_spec: dict, json_path: Path, csv_path: Path):
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(dataset_spec, f, ensure_ascii=False, indent=2)
+
+        rows = dataset_spec.get("rows", [])
+        if not rows:
+            csv_path.write_text("", encoding="utf-8")
+            return
+
+        fieldnames = list(rows[0].keys())
+        for row in rows[1:]:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
+
+        def _cell_value(value):
+            if value is None:
+                return ""
+            if isinstance(value, (str, int, float, bool)):
+                return value
+            return json.dumps(value, ensure_ascii=False)
+
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({name: _cell_value(row.get(name)) for name in fieldnames})
+
+    @staticmethod
+    def _safe_slug(text: str) -> str:
+        value = re.sub(r"[^A-Za-z0-9._-]+", "_", text or "")
+        value = value.strip("._-")
+        return value or "task"
 
     def _print_session(self, session: CodeSession):
         print(f"\n{'━'*58}")

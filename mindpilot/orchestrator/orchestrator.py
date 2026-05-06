@@ -14,21 +14,21 @@ import time
 import uuid
 from typing import Optional
 
-from config import CONFIG
-from framework.logger import MindPilotLogger
-from framework.communication import ErrorCode, MessageBus, HumanInTheLoop
-from framework.scheduler import SyncScheduler, Task
-from memory.memory_store import MemoryStore
-from tools.llm_client import LLMClient
-from tools.arxiv_search import ArXivSearchTool
-from tools.code_executor import CodeExecutor
-from tools.visualizer import AutoVisualizer
-from tools.report_generator import ReportGenerator
-from agents.planning_agent import PlanningAgent
-from agents.literature_agent import LiteratureAgent
-from agents.code_agent import CodeAgent
-from agents.analysis_agent import AnalysisAgent
-from agents.evaluation_agent import EvaluationAgent
+from MindPilotAgent.mindpilot.config import CONFIG
+from MindPilotAgent.mindpilot.framework.logger import MindPilotLogger
+from MindPilotAgent.mindpilot.framework.communication import ErrorCode, MessageBus, HumanInTheLoop
+from MindPilotAgent.mindpilot.framework.scheduler import SyncScheduler, Task
+from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
+from MindPilotAgent.mindpilot.tools.llm_client import LLMClient
+from MindPilotAgent.mindpilot.tools.arxiv_search import ArXivSearchTool
+from MindPilotAgent.mindpilot.tools.code_executor import CodeExecutor
+from MindPilotAgent.mindpilot.tools.visualizer import AutoVisualizer
+from MindPilotAgent.mindpilot.tools.report_generator import ReportGenerator
+from MindPilotAgent.mindpilot.agents.planning_agent import PlanningAgent
+from MindPilotAgent.mindpilot.agents.literature_agent import LiteratureAgent
+from MindPilotAgent.mindpilot.agents.code_agent import CodeAgent
+from MindPilotAgent.mindpilot.agents.analysis_agent import AnalysisAgent
+from MindPilotAgent.mindpilot.agents.evaluation_agent import EvaluationAgent
 
 
 class MindPilotOrchestrator:

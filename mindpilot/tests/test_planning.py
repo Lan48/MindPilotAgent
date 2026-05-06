@@ -6,11 +6,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
 from unittest.mock import MagicMock
-from config import CONFIG
-from agents.planning_agent import PlanningAgent, SubTask, ResearchPlan
-from tools.llm_client import LLMClient
-from memory.memory_store import MemoryStore
-from framework.logger import MindPilotLogger
+from MindPilotAgent.mindpilot.config import CONFIG
+from MindPilotAgent.mindpilot.agents.planning_agent import PlanningAgent, SubTask, ResearchPlan
+from MindPilotAgent.mindpilot.tools.llm_client import LLMClient
+from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
+from MindPilotAgent.mindpilot.framework.logger import MindPilotLogger
 
 
 def make_agent():

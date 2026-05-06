@@ -7,10 +7,16 @@ MindPilot — 主入口（交互模式）
 import sys
 import os
 
-# 确保项目根目录在 Python 路径中
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from orchestrator.orchestrator import MindPilotOrchestrator
+# 确保项目根目录的父目录在 Python 路径中，以便能导入
+# 顶级包 `MindPilotAgent`（当直接运行脚本时当前路径通常是
+# 项目目录，本文件位于 `MindPilotAgent/mindpilot/main.py`，
+# 因此需要将项目目录的父目录加入 sys.path）。
+project_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_parent)
+#sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from MindPilotAgent.mindpilot.orchestrator.orchestrator import MindPilotOrchestrator
 
 
 EXAMPLE_QUERIES = [
