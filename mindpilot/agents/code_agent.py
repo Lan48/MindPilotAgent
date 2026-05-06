@@ -5,6 +5,7 @@
 AST 静态安全检测 + 受限沙箱执行。
 """
 
+import ast
 import csv
 import json
 import os
@@ -44,6 +45,7 @@ class CodeAgent:
         self.max_rounds = config.code.max_debug_rounds
         self.dataset_dir = Path(__file__).resolve().parent.parent / "dataset"
         self.dataset_dir.mkdir(parents=True, exist_ok=True)
+        self.debug_mode = os.getenv("MP_DEBUG", "0") == "1"
 
     def run(self, task_description: str, context: dict = None) -> dict:
         """
@@ -69,6 +71,15 @@ class CodeAgent:
             # Step 3: 初始代码生成
             self.logger.info(self.AGENT_NAME, "生成初始代码...")
             code = self._generate_code(task_description, context_hint, context, dataset_info)
+
+
+            quick_issues = self._quick_validate_code(code)
+            if quick_issues:
+                self.logger.warning(
+                    self.AGENT_NAME,
+                    f"初始代码快速校验失败: {quick_issues[0]}"
+                )
+                code = self._regenerate_clean_code(task_description, code)
 
             # Step 4: 执行 + 自动调试循环
             for round_num in range(1, self.max_rounds + 1):
@@ -288,7 +299,10 @@ class CodeAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ])
-        return self.executor.extract_code(resp)
+        extracted = self.executor.extract_code(resp)
+        self._save_debug_file("generate_raw.txt", str(resp))
+        self._save_debug_file("generate_extracted.py", extracted)
+        return extracted
 
     def _debug_code(self, code: str, error: str, error_type: str, requirement: str) -> str:
         """根据错误信息自动修复代码"""
@@ -306,7 +320,10 @@ class CodeAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ])
-        return self.executor.extract_code(resp)
+        extracted = self.executor.extract_code(resp)
+        self._save_debug_file("debug_raw.txt", str(resp))
+        self._save_debug_file("debug_extracted.py", extracted)
+        return extracted
 
     def _fix_safety_issues(self, code: str, issues: list[str]) -> str:
         """修复安全问题"""
@@ -439,6 +456,37 @@ class CodeAgent:
         value = re.sub(r"[^A-Za-z0-9._-]+", "_", text or "")
         value = value.strip("._-")
         return value or "task"
+
+
+    def _save_debug_file(self, filename: str, content: str):
+        if not self.debug_mode:
+            return
+
+        debug_dir = "debug_outputs"
+        os.makedirs(debug_dir, exist_ok=True)
+
+        path = os.path.join(debug_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content if content is not None else "")
+
+    def _quick_validate_code(self, code: str) -> list[str]:
+        """对生成代码做轻量校验，返回问题列表。"""
+        issues = []
+
+        if not code or not code.strip():
+            issues.append("生成代码为空")
+            return issues
+
+        if len(code.strip()) < 50:
+            issues.append("生成代码过短，疑似不完整")
+
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            issues.append(f"语法错误: {e}")
+            return issues
+
+        return issues
 
     def _print_session(self, session: CodeSession):
         print(f"\n{'━'*58}")
