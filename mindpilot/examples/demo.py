@@ -9,11 +9,11 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from MindPilotAgent.mindpilot.orchestrator.orchestrator import MindPilotOrchestrator
-from MindPilotAgent.mindpilot.agents.evaluation_agent import BenchmarkEvaluator
-from MindPilotAgent.mindpilot.tools.llm_client import LLMClient
-from MindPilotAgent.mindpilot.framework.logger import MindPilotLogger
-from MindPilotAgent.mindpilot.config import CONFIG
+from orchestrator.orchestrator import MindPilotOrchestrator
+from agents.evaluation_agent import BenchmarkEvaluator
+from tools.llm_client import LLMClient
+from framework.logger import MindPilotLogger
+from config import CONFIG
 
 
 # ── 改进⑥：Demo 用进度回调 ──────────────────────────────────
@@ -71,9 +71,9 @@ def demo_literature_only():
     print("Demo 2: 文献检索 Agent 单独演示")
     print("🟩"*30)
 
-    from MindPilotAgent.mindpilot.tools.arxiv_search import ArXivSearchTool
-    from MindPilotAgent.mindpilot.agents.literature_agent import LiteratureAgent
-    from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
+    from tools.arxiv_search import ArXivSearchTool
+    from agents.literature_agent import LiteratureAgent
+    from memory.memory_store import MemoryStore
 
     logger = MindPilotLogger(session_id="demo2", log_dir="logs")
     llm = LLMClient(CONFIG)
@@ -97,9 +97,9 @@ def demo_code_agent():
     print("Demo 3: 代码生成 Agent 单独演示")
     print("🟨"*30)
 
-    from MindPilotAgent.mindpilot.tools.code_executor import CodeExecutor
-    from MindPilotAgent.mindpilot.agents.code_agent import CodeAgent
-    from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
+    from tools.code_executor import CodeExecutor
+    from agents.code_agent import CodeAgent
+    from memory.memory_store import MemoryStore
 
     logger = MindPilotLogger(session_id="demo3", log_dir="logs")
     llm = LLMClient(CONFIG)
@@ -126,10 +126,10 @@ def demo_analysis_agent():
     print("🟧"*30)
 
     import numpy as np
-    from MindPilotAgent.mindpilot.agents.analysis_agent import AnalysisAgent
-    from MindPilotAgent.mindpilot.tools.visualizer import AutoVisualizer
-    from MindPilotAgent.mindpilot.tools.report_generator import ReportGenerator
-    from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
+    from agents.analysis_agent import AnalysisAgent
+    from tools.visualizer import AutoVisualizer
+    from tools.report_generator import ReportGenerator
+    from memory.memory_store import MemoryStore
 
     logger = MindPilotLogger(session_id="demo4", log_dir="logs")
     llm = LLMClient(CONFIG)

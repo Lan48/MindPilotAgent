@@ -272,14 +272,12 @@ class PlanningAgent:
         self.llm     = llm_client
         self.memory  = memory_store
         self.logger  = logger
-        # 生成三条研究路径，并选出一条得分最高的路径
         self.tot     = TreeOfThoughtPlanner(
             llm_client,
             branching_factor=config.planning.branching_factor,
             max_depth=config.planning.max_depth,
             logger=logger,
         )
-        # 根据上述生成的推荐研究路径，分解成5-7个任务流程
         self.react = ReActPlanner(llm_client, logger=logger)
 
     def run(self, query: str) -> ResearchPlan:
@@ -399,3 +397,4 @@ class PlanningAgent:
         print(f"{'━'*60}")
         print(f"  💡 {plan.reasoning[:100]}")
         print(f"{'━'*60}\n")
+        

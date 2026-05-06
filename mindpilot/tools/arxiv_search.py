@@ -141,12 +141,12 @@ class ArXivSearchTool:
         【重点修改】：采用主从逻辑：Core AND (Sub1 OR Sub2)
         """
         terms = [t.strip() for t in query.split(',') if t.strip()]
-
+        
         if terms:
             # 排名第一的词是绝对核心，必须包含
             core_term = terms[0]
             q_str = f'all:"{core_term}"'
-
+            
             # 后续的词作为拓展词，用 OR 连接，命中任意一个即可
             if len(terms) > 1:
                 sub_terms = terms[1:]
@@ -154,17 +154,17 @@ class ArXivSearchTool:
                 q_str = f'({q_str} AND ({sub_q}))'
         else:
             q_str = 'all:"deep learning"'
-
+            
         if categories:
             cat_q = " OR ".join(f"cat:{c}" for c in categories)
             q_str = f"({q_str}) AND ({cat_q})"
-
+            
         return q_str
 
     def _parse_xml(self, xml_data: str, query: str) -> list[Paper]:
         root = ET.fromstring(xml_data)
         papers = []
-
+        
         # 兼容逗号切分后的词频统计
         clean_query = query.replace(',', ' ').replace('"', ' ').lower()
         query_words = set(clean_query.split())

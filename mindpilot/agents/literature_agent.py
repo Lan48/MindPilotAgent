@@ -55,50 +55,50 @@ class LightKnowledgeGraph:
 
     def add_paper(self, paper) -> str:
         pid = f"paper:{paper.arxiv_id}"
-
+        
         self.add_node(KnowledgeNode(
             node_id=pid, node_type="paper",
             label=paper.title[:100],
             properties={
-                "year": paper.published[:4],
+                "year": paper.published[:4], 
                 "url": paper.url,
                 "relevance": paper.relevance_score,
-                "summary": paper.structured_summary
+                "summary": paper.structured_summary 
             }
         ))
-
+        
         for author in paper.authors[:3]:
             aid = f"author:{author.replace(' ', '_')}"
             self.add_node(KnowledgeNode(node_id=aid, node_type="author", label=author))
             self.add_edge(KnowledgeEdge(pid, aid, "authored_by"))
-
+            
         for cat in paper.categories[:2]:
             cid = f"cat:{cat}"
             self.add_node(KnowledgeNode(node_id=cid, node_type="category", label=cat))
             self.add_edge(KnowledgeEdge(pid, cid, "belongs_to"))
-
+            
         keywords = paper.categories + [w for w in paper.title.split() if len(w) > 5]
         for kw in keywords[:5]:
             kid = f"kw:{kw.lower()}"
             self.add_node(KnowledgeNode(node_id=kid, node_type="keyword", label=kw))
             self.add_edge(KnowledgeEdge(pid, kid, "has_keyword"))
-
+            
         return pid
 
     def search_relevant_papers(self, query: str) -> list[str]:
         query_words = set(w.strip() for w in query.replace(',', ' ').lower().split() if w.strip())
         relevant_pids = []
-
+        
         for nid, node in self.nodes.items():
             if node.node_type == "paper":
                 node_text = node.label.lower()
                 summary = node.properties.get("summary")
                 if isinstance(summary, dict):
                     node_text += " " + " ".join(str(v).lower() for v in summary.values())
-
+                
                 if any(word in node_text for word in query_words):
                     relevant_pids.append(nid)
-
+                    
         return relevant_pids
 
     def save_to_disk(self):
@@ -202,13 +202,13 @@ class LiteratureAgent:
         self.memory = memory_store
         self.logger = logger
         self.summarizer = StructuredSummarizer(llm_client, config.literature.summary_max_len, logger)
-
+        
         storage_dir = getattr(config, 'memory_dir', 'memory')
         kg_path = os.path.join(storage_dir, "store", "kg.json")
         self.kg = LightKnowledgeGraph(storage_path=kg_path)
-
+        
         self.reranker_model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        self.reranker = None
+        self.reranker = None 
 
     def _init_reranker(self):
         if self.reranker is not None:
@@ -243,28 +243,28 @@ class LiteratureAgent:
             '[\n  {"keyword": "Image Denoising", "score": 10},\n  {"keyword": "Convolutional Neural Network", "score": 9},\n  {"keyword": "SIDD Dataset", "score": 6}\n]'
         )
         prompt_text = f"【核心问题】：{query}\n【任务描述】：{task_description}"
-
+        
         try:
             resp = self.llm.chat([
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt_text}
             ])
-
+            
             m = re.search(r"\[[\s\S]+\]", resp)
             json_str = m.group(0) if m else resp
             keywords_data = json.loads(json_str)
-
+            
             keywords_data.sort(key=lambda x: x.get("score", 0), reverse=True)
-
+            
             if self.logger:
                 self.logger.info(self.AGENT_NAME, f"📊 LLM 关键词打分排名: {json.dumps(keywords_data, ensure_ascii=False)}")
-
+            
             top_keywords = [item["keyword"] for item in keywords_data[:max_keywords]]
-
+            
             if top_keywords:
                 clean_keywords = ", ".join(top_keywords)
                 return clean_keywords
-
+                
             return query or task_description
         except Exception as e:
             if self.logger:
@@ -305,7 +305,7 @@ class LiteratureAgent:
 
             recall_5 = self._compute_recall_at_k(papers, k=5)
             recall_10 = self._compute_recall_at_k(papers, k=10)
-
+            
             review = self._generate_review(original_context, papers[:5])
 
             self.memory.add(

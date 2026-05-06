@@ -5,12 +5,12 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
-from MindPilotAgent.mindpilot.config import CONFIG
-from MindPilotAgent.mindpilot.agents.literature_agent import LiteratureAgent, LightKnowledgeGraph
-from MindPilotAgent.mindpilot.tools.arxiv_search import ArXivSearchTool, Paper
-from MindPilotAgent.mindpilot.tools.llm_client import LLMClient
-from MindPilotAgent.mindpilot.memory.memory_store import MemoryStore
-from MindPilotAgent.mindpilot.framework.logger import MindPilotLogger
+from config import CONFIG
+from agents.literature_agent import LiteratureAgent, LightKnowledgeGraph
+from tools.arxiv_search import ArXivSearchTool, Paper
+from tools.llm_client import LLMClient
+from memory.memory_store import MemoryStore
+from framework.logger import MindPilotLogger
 
 
 def make_agent():
